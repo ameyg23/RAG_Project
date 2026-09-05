@@ -291,7 +291,7 @@ a real Groq answer.
 
 ---
 
-## Phase 11 [ ] — Grounded Generation
+## Phase 11 [x] — Grounded Generation
 
 **Objective:** implement Stage 11 of `docs/RAG_PIPELINE.md` (the system
 prompt) and the full grounding strategy (three-layer enforcement).
