@@ -240,7 +240,7 @@ naturally covered by Phase 21's deployment smoke test if not sooner.
 
 ---
 
-## Phase 9 [ ] — Retrieval
+## Phase 9 [x] — Retrieval
 
 **Objective:** implement Stage 8–10 of `docs/RAG_PIPELINE.md` (similarity
 search, top-K, context construction).
