@@ -1,0 +1,5 @@
+# Already installed in backend/.venv (this suite reuses that environment;
+# see evaluation/README.md). Listed here only so evaluation/ is runnable
+# standalone if a separate environment is ever set up.
+httpx==0.28.1
+groq==0.15.0

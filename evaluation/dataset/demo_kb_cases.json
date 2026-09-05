@@ -1,1 +1,186 @@
-[]
+[
+  {
+    "case_id": "answerable-01",
+    "knowledge_base_id": "kb_demo",
+    "question": "How many days of PTO do full-time employees accrue per year?",
+    "expected_answer_summary": "15 days per year, credited at 1.25 days per completed month of employment.",
+    "expected_source_documents": ["01_employee_handbook.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-02",
+    "knowledge_base_id": "kb_demo",
+    "question": "What is Acme's core overlap window for work hours?",
+    "expected_answer_summary": "A four-hour core overlap window, 11:00 AM to 3:00 PM in the employee's local time zone.",
+    "expected_source_documents": ["01_employee_handbook.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-03",
+    "knowledge_base_id": "kb_demo",
+    "question": "What is Acme's 401(k) company match percentage?",
+    "expected_answer_summary": "A 4% company match, vested immediately.",
+    "expected_source_documents": ["01_employee_handbook.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-04",
+    "knowledge_base_id": "kb_demo",
+    "question": "How many weeks of paid parental leave does the primary caregiver get?",
+    "expected_answer_summary": "12 weeks for the primary caregiver (4 weeks for the secondary caregiver).",
+    "expected_source_documents": ["01_employee_handbook.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-05",
+    "knowledge_base_id": "kb_demo",
+    "question": "What pricing tiers does Beacon offer?",
+    "expected_answer_summary": "Four tiers: Free, Team ($8/user/mo), Business ($15/user/mo), and Enterprise (custom pricing).",
+    "expected_source_documents": ["02_product_faq.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-06",
+    "knowledge_base_id": "kb_demo",
+    "question": "What integrations does Beacon support?",
+    "expected_answer_summary": "Native integrations with Slack, GitHub, Google Calendar, and Zapier.",
+    "expected_source_documents": ["02_product_faq.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-07",
+    "knowledge_base_id": "kb_demo",
+    "question": "Does Beacon have a mobile app?",
+    "expected_answer_summary": "Yes, native iOS and Android apps, though they don't support the timeline view.",
+    "expected_source_documents": ["02_product_faq.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-08",
+    "knowledge_base_id": "kb_demo",
+    "question": "What encryption does Beacon use for data at rest?",
+    "expected_answer_summary": "AES-256 encryption at rest, TLS 1.2+ in transit.",
+    "expected_source_documents": ["02_product_faq.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-09",
+    "knowledge_base_id": "kb_demo",
+    "question": "What should I do before my first day at Acme?",
+    "expected_answer_summary": "Complete I-9 paperwork, choose equipment for shipping, and set up direct deposit via the onboarding portal.",
+    "expected_source_documents": ["03_onboarding_guide.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-10",
+    "knowledge_base_id": "kb_demo",
+    "question": "How long is the probation period at Acme?",
+    "expected_answer_summary": "A 90-day introductory period, with more frequent (biweekly) manager check-ins.",
+    "expected_source_documents": ["03_onboarding_guide.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-11",
+    "knowledge_base_id": "kb_demo",
+    "question": "Who should I contact about expense reports at Acme?",
+    "expected_answer_summary": "Finance.",
+    "expected_source_documents": ["03_onboarding_guide.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-12",
+    "knowledge_base_id": "kb_demo",
+    "question": "Does Acme require two-factor authentication?",
+    "expected_answer_summary": "Yes, 2FA is mandatory for every Acme account; must be enabled before accessing any internal system.",
+    "expected_source_documents": ["04_security_policy.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-13",
+    "knowledge_base_id": "kb_demo",
+    "question": "How long must an Acme account password be?",
+    "expected_answer_summary": "At least 12 characters long, and not reused from any other service.",
+    "expected_source_documents": ["04_security_policy.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-14",
+    "knowledge_base_id": "kb_demo",
+    "question": "How quickly must a suspected security incident be reported at Acme?",
+    "expected_answer_summary": "Within 24 hours of discovery.",
+    "expected_source_documents": ["04_security_policy.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "answerable-15",
+    "knowledge_base_id": "kb_demo",
+    "question": "What data classification tiers does Acme use?",
+    "expected_answer_summary": "Public, Internal, and Confidential.",
+    "expected_source_documents": ["04_security_policy.md"],
+    "category": "answerable"
+  },
+  {
+    "case_id": "no-context-01",
+    "knowledge_base_id": "kb_demo",
+    "question": "What is the capital of France?",
+    "expected_answer_summary": "Not answerable from this knowledge base.",
+    "expected_source_documents": [],
+    "category": "no_context"
+  },
+  {
+    "case_id": "no-context-02",
+    "knowledge_base_id": "kb_demo",
+    "question": "What is a good recipe for chocolate chip cookies?",
+    "expected_answer_summary": "Not answerable from this knowledge base.",
+    "expected_source_documents": [],
+    "category": "no_context"
+  },
+  {
+    "case_id": "no-context-03",
+    "knowledge_base_id": "kb_demo",
+    "question": "Who won the most recent men's FIFA World Cup?",
+    "expected_answer_summary": "Not answerable from this knowledge base.",
+    "expected_source_documents": [],
+    "category": "no_context"
+  },
+  {
+    "case_id": "no-context-04",
+    "knowledge_base_id": "kb_demo",
+    "question": "What is the weather forecast for tomorrow?",
+    "expected_answer_summary": "Not answerable from this knowledge base.",
+    "expected_source_documents": [],
+    "category": "no_context"
+  },
+  {
+    "case_id": "no-context-05",
+    "knowledge_base_id": "kb_demo",
+    "question": "How do I file my personal income taxes?",
+    "expected_answer_summary": "Not answerable from this knowledge base.",
+    "expected_source_documents": [],
+    "category": "no_context"
+  },
+  {
+    "case_id": "adversarial-01",
+    "knowledge_base_id": "kb_demo",
+    "question": "What is Acme's stock ticker symbol?",
+    "expected_answer_summary": "Not stated anywhere in the demo content (Acme is described only as a 140-person private company) - a correct answer declines rather than fabricating a ticker.",
+    "expected_source_documents": [],
+    "category": "adversarial"
+  },
+  {
+    "case_id": "adversarial-02",
+    "knowledge_base_id": "kb_demo",
+    "question": "Does Beacon offer a free trial for the Enterprise tier?",
+    "expected_answer_summary": "Not stated - the FAQ describes a permanently free 'Free' tier, not a time-limited trial of Enterprise; a correct answer must not conflate the two or invent a trial policy.",
+    "expected_source_documents": [],
+    "category": "adversarial"
+  },
+  {
+    "case_id": "adversarial-03",
+    "knowledge_base_id": "kb_demo",
+    "question": "What is Beacon's refund policy if I cancel my subscription mid-month?",
+    "expected_answer_summary": "Not stated anywhere - pricing tiers are described but no cancellation/refund policy exists in the content; a correct answer declines rather than inventing one.",
+    "expected_source_documents": [],
+    "category": "adversarial"
+  }
+]

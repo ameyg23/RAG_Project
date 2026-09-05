@@ -500,7 +500,7 @@ reaching the browser.
 
 ---
 
-## Phase 18 [ ] — Evaluation
+## Phase 18 [x] — Evaluation
 
 **Objective:** build and run the RAG evaluation suite against the real
 system.
@@ -520,6 +520,24 @@ or explicitly documented as not-yet-met with a follow-up action.
 **Definition of done:** a real evaluation run completes and its results
 file exists; metrics reported anywhere (README, portfolio writeup) are
 copied from this real output, never estimated.
+
+**Status note:** done. `evaluation/dataset/demo_kb_cases.json` has 23
+hand-verified cases (15 answerable, 5 no_context, 3 adversarial), each
+checked against the actual demo document text before writing. A real run
+against the live backend + live Groq is recorded at
+`evaluation/results/20260905T201415Z.json`: all §11 targets pass
+(retrieval_hit_rate 1.0, mean_groundedness_score 1.0, mean_relevance_score
+1.0, no_context_precision 1.0, hallucination_rate 0.0) — the adversarial
+cases correctly declined to fabricate rather than fabricating an answer or
+misfiring the no-context path. Two honest caveats, also recorded in the
+results file's `known_limitations`: (1) `retrieval_hit_rate` and
+`source_accuracy_rate` are computed from the same signal (the `/chat`
+response's `sources[]`) since the script is intentionally HTTP-only per
+§13 and has no visibility into internally-retrieved chunks that weren't
+ultimately cited — they are numerically identical in this run, not
+independently measured; (2) 23 cases against 4 short demo documents is a
+small, narrow benchmark — a perfect score here demonstrates the grounding
+strategy works on this dataset, not general-purpose robustness at scale.
 
 ---
 
