@@ -1,0 +1,584 @@
+# Project Roadmap
+
+Sequential phases from project initialization to public deployment. Each
+phase lists Objective, Prerequisites, Tasks, Files/Components Affected,
+Validation, and Definition of Done. Phases are dependency-ordered — do not
+start phase N+1 until phase N's Definition of Done is met, except where
+explicitly noted as parallelizable.
+
+Status legend: `[ ]` not started, `[x]` done. Update this file's phase
+headers as work progresses.
+
+---
+
+## Phase 0 [x] — Planning
+
+**Objective:** produce a complete, internally consistent specification before
+any application code is written.
+
+**Prerequisites:** none.
+
+**Tasks:** all 17 planning deliverables (`docs/REQUIREMENTS.md` through
+`docs/PLANNING_REVIEW.md`), `ARCHITECTURE.md`, `ROADMAP.md` (this file),
+`.claude/agents/*.md`, `README.md` skeleton.
+
+**Files/components affected:** `docs/`, `ARCHITECTURE.md`, `ROADMAP.md`,
+`.claude/agents/`, `README.md`, `.env.example`, `evaluation/` scaffold.
+
+**Validation:** `docs/PLANNING_REVIEW.md` checklist fully checked; all
+acceptance criteria in every deliverable satisfied; no contradiction between
+documents (tech stack, endpoints, data model, requirements all agree).
+
+**Definition of done:** this phase's Definition of Done is `docs/PLANNING_REVIEW.md`
+existing with every checklist item marked complete and the Final Planning
+Gate in this session's instructions passed. **Done** — see
+`docs/PLANNING_REVIEW.md`'s Final Planning Gate (result: PASSED).
+
+---
+
+## Phase 1 [x] — Repository Setup
+
+**Objective:** establish the two-project (frontend/backend) repository
+skeleton with tooling, matching the architecture already decided.
+
+**Prerequisites:** Phase 0 complete.
+
+**Tasks:**
+- Initialize `frontend/` (Vite + React scaffold: `npm create vite@latest`).
+- Initialize `backend/` (FastAPI project skeleton, `requirements.txt` per
+  ADR-03/04/05/06).
+- Add `.gitignore` (node_modules, `__pycache__`, `.env`, build output).
+- Add linting/formatting config (ESLint+Prettier for frontend, Ruff/Black
+  for backend) — lightweight, free, no paid tooling.
+- Wire up `.env.example` (already written in Phase 0) and confirm both
+  frontend and backend load config as documented in `docs/ENVIRONMENT.md`.
+
+**Files/components affected:** `frontend/`, `backend/`, `.gitignore`,
+lint/format configs.
+
+**Validation:** `npm run dev` starts the Vite dev server; `uvicorn
+main:app --reload` starts FastAPI and `GET /health` returns `200`.
+
+**Definition of done:** both dev servers start cleanly from a fresh clone
+following only `docs/ENVIRONMENT.md` and this phase's setup steps.
+
+---
+
+## Phase 2 [ ] — Frontend Foundation
+
+**Objective:** build the app shell and routing/state structure described in
+`ARCHITECTURE.md` §2, with no real data yet.
+
+**Prerequisites:** Phase 1.
+
+**Tasks:** implement the three-region layout (KB selector, chat panel,
+upload/documents panel) as empty/placeholder components; implement the
+shared `activeKnowledgeBaseId`/`sessionToken` context; implement the typed
+API client matching `docs/API.md` exactly (against a not-yet-built backend —
+stub responses for now).
+
+**Files/components affected:** `frontend/src/`.
+
+**Validation:** component render tests for each empty-state screen per
+`docs/UI_UX.md`.
+
+**Definition of done:** app renders all empty/placeholder states with no
+console errors; API client's function signatures match every endpoint in
+`docs/API.md`.
+
+---
+
+## Phase 3 [ ] — Backend Foundation
+
+**Objective:** stand up the FastAPI app skeleton, routing, and config
+loading, with all endpoints returning stub/mock data.
+
+**Prerequisites:** Phase 1.
+
+**Tasks:** implement `main.py` (CORS config per `docs/SECURITY.md`), all
+route modules from `ARCHITECTURE.md` §3 with stub handlers matching
+`docs/API.md`'s response shapes exactly, Pydantic schemas
+(`models/schemas.py`) for every request/response body, `config.py` env
+loading per `docs/ENVIRONMENT.md`.
+
+**Files/components affected:** `backend/main.py`, `backend/api/`,
+`backend/models/`, `backend/config.py`.
+
+**Validation:** OpenAPI docs at `/docs` match `docs/API.md` for every
+endpoint, method, and status code; Pydantic validation rejects malformed
+requests per NFR-006.
+
+**Definition of done:** every endpoint in `docs/API.md` exists and returns
+schema-correct (if not yet functionally real) responses; `GET /health`
+returns real `200`.
+
+*(Phase 2 and Phase 3 may run in parallel once Phase 1 is done.)*
+
+---
+
+## Phase 4 [ ] — Demo Documents
+
+**Objective:** select and prepare the real content for the demo knowledge
+base (FR-001–004).
+
+**Prerequisites:** Phase 3.
+
+**Tasks:** choose 3–5 real source documents (e.g. a sample handbook/FAQ/
+product doc — public-domain or self-authored content, since no licensed
+content may be redistributed); place them under a `backend/demo_content/`
+directory; draft 3–5 suggested questions per FR-003 that are genuinely
+answerable from this content.
+
+**Files/components affected:** `backend/demo_content/`.
+
+**Validation:** manual read-through confirms each suggested question is
+answerable from the chosen documents.
+
+**Definition of done:** demo content committed to the repo; suggested
+questions list finalized and matches actual document content.
+
+---
+
+## Phase 5 [ ] — Document Ingestion
+
+**Objective:** implement Stage 1–2 of `docs/RAG_PIPELINE.md` (extraction,
+cleaning) for all four supported formats.
+
+**Prerequisites:** Phase 3.
+
+**Tasks:** implement `ingestion/extract.py` (PDF/DOCX/TXT/MD extraction via
+LangChain loaders per ADR-05), implement cleaning per RAG_PIPELINE.md §2,
+implement the empty/corrupted-document failure paths per
+`docs/DOCUMENT_PROCESSING.md`.
+
+**Files/components affected:** `backend/ingestion/extract.py`.
+
+**Validation:** unit tests per `docs/TEST_STRATEGY.md` (extraction success
+per format, empty-document failure, corrupted-file failure, cleaning
+idempotence).
+
+**Definition of done:** all four formats extract correctly on a real sample
+file each; empty/corrupted cases produce the correct `FAILED` reason string,
+never a crash.
+
+---
+
+## Phase 6 [ ] — Chunking
+
+**Objective:** implement Stage 3–4 of `docs/RAG_PIPELINE.md` (chunking,
+metadata).
+
+**Prerequisites:** Phase 5.
+
+**Tasks:** implement `ingestion/chunk.py` using LangChain
+`RecursiveCharacterTextSplitter` at the configured size/overlap (800/120);
+attach metadata (`docs/DATA_MODEL.md` → DocumentChunk) to every chunk.
+
+**Files/components affected:** `backend/ingestion/chunk.py`.
+
+**Validation:** unit tests: chunk size bound, overlap correctness,
+reconstruction test, metadata completeness (per `docs/TEST_STRATEGY.md`).
+
+**Definition of done:** chunking a real demo document produces chunks
+matching the configuration table in `docs/RAG_PIPELINE.md`.
+
+---
+
+## Phase 7 [ ] — Embeddings
+
+**Objective:** implement Stage 5/7 of `docs/RAG_PIPELINE.md` (embedding,
+query embedding).
+
+**Prerequisites:** Phase 6.
+
+**Tasks:** implement `ingestion/embed.py` loading `all-MiniLM-L6-v2` once at
+process startup (ADR-06); implement batched embedding for ingestion and
+single-input embedding for queries via the same function.
+
+**Files/components affected:** `backend/ingestion/embed.py`.
+
+**Validation:** unit tests: output dimensionality (384), determinism (per
+`docs/TEST_STRATEGY.md`).
+
+**Definition of done:** embedding a batch of real chunks and a real query
+produces vectors in the same space (manually verified via cosine similarity
+sanity check on an obviously-related pair).
+
+---
+
+## Phase 8 [ ] — Vector Database
+
+**Objective:** implement Stage 6 of `docs/RAG_PIPELINE.md` (vector storage)
+against a real Qdrant Cloud free cluster.
+
+**Prerequisites:** Phase 7; a Qdrant Cloud free account created per
+`docs/DEPLOYMENT.md` step 1.
+
+**Tasks:** implement `retrieval/vector_store.py` (the single Qdrant choke
+point per ADR-14) — collection creation/verification, upsert by `chunk_id`,
+delete by `document_id`, query with mandatory `knowledge_base_id` filter.
+
+**Files/components affected:** `backend/retrieval/vector_store.py`.
+
+**Validation:** integration test per `docs/TEST_STRATEGY.md` — upsert then
+query-by-filter returns expected chunk count; KB-isolation test passes.
+
+**Definition of done:** a real chunk round-trips (embed → upsert → query →
+retrieve) against the live Qdrant free cluster.
+
+---
+
+## Phase 9 [ ] — Retrieval
+
+**Objective:** implement Stage 8–10 of `docs/RAG_PIPELINE.md` (similarity
+search, top-K, context construction).
+
+**Prerequisites:** Phase 8.
+
+**Tasks:** implement `retrieval/retriever.py` — search, apply top-K=5 and
+min-similarity=0.35 threshold, construct labeled context string, build the
+citation-index map.
+
+**Files/components affected:** `backend/retrieval/retriever.py`.
+
+**Validation:** unit test: citation markers match citation map 1:1;
+integration test: known question against demo KB returns the expected
+source chunk in top-K (retrieval-hit-rate style test from
+`docs/TEST_STRATEGY.md`).
+
+**Definition of done:** a real query against the ingested demo KB returns a
+sensible top-K set with correctly labeled context.
+
+---
+
+## Phase 10 [ ] — LLM
+
+**Objective:** implement Stage 12 of `docs/RAG_PIPELINE.md` (Groq
+integration).
+
+**Prerequisites:** Phase 9; a Groq free account/API key created per
+`docs/DEPLOYMENT.md` step 2.
+
+**Tasks:** implement `retrieval/generation.py` — Groq client call with
+`llama-3.3-70b-versatile`, temperature 0.1–0.2, mapped error handling for
+timeout/rate-limit/network failure per FR-054.
+
+**Files/components affected:** `backend/retrieval/generation.py`.
+
+**Validation:** integration test with a mocked Groq client covers every
+failure mode's mapped response (per `docs/TEST_STRATEGY.md`); one real call
+against the live Groq API confirms end-to-end wiring.
+
+**Definition of done:** a real prompt built from Phase 9's context produces
+a real Groq answer.
+
+---
+
+## Phase 11 [ ] — Grounded Generation
+
+**Objective:** implement Stage 11 of `docs/RAG_PIPELINE.md` (the system
+prompt) and the full grounding strategy (three-layer enforcement).
+
+**Prerequisites:** Phase 10.
+
+**Tasks:** write and version the system prompt template (grounding
+instructions, prompt-injection framing per `docs/SECURITY.md`); wire the
+no-context short-circuit (Stage 10) so the LLM is never called when
+retrieval is empty/below threshold.
+
+**Files/components affected:** `backend/retrieval/generation.py`.
+
+**Validation:** `docs/RAG_EVALUATION.md` no-context cases pass (exact-match
+fixed response); adversarial cases pass per that doc's thresholds.
+
+**Definition of done:** an out-of-scope question against the demo KB reliably
+returns the fixed no-context response without ever calling Groq.
+
+---
+
+## Phase 12 [ ] — Source Citations
+
+**Objective:** implement Stage 14 of `docs/RAG_PIPELINE.md` (source
+attribution) and wire `POST /chat`'s real response.
+
+**Prerequisites:** Phase 11.
+
+**Tasks:** implement citation-marker parsing + fallback-to-all-context-chunks
+behavior; assemble the final `sources[]` array matching
+`docs/DATA_MODEL.md` → SourceReference and `docs/API.md`.
+
+**Files/components affected:** `backend/api/chat.py`,
+`backend/retrieval/generation.py`.
+
+**Validation:** unit test: every citation maps to a chunk actually present
+in that request's prompt (FR-041, per `docs/TEST_STRATEGY.md`).
+
+**Definition of done:** `POST /chat` against the real demo KB returns a real,
+correctly cited answer end-to-end.
+
+---
+
+## Phase 13 [ ] — User Uploads
+
+**Objective:** implement `POST /documents/upload` for real (validation +
+transient file handling per ADR-11).
+
+**Prerequisites:** Phase 8 (needs a working vector store), Phase 3.
+
+**Tasks:** implement upload validation (count/size/type, exact error codes
+per `docs/API.md`), temp-file handling (server-generated paths per
+`docs/SECURITY.md` path-traversal mitigation), session-token issuance/
+verification.
+
+**Files/components affected:** `backend/api/documents.py`.
+
+**Validation:** integration tests per `docs/TEST_STRATEGY.md` for every
+documented status code (202, 400×3, 413).
+
+**Definition of done:** a real multi-file upload is accepted, rejected
+correctly for each invalid case, and files land in the temp directory with
+server-generated names.
+
+---
+
+## Phase 14 [ ] — Processing Status
+
+**Objective:** wire Phases 5–8's pipeline into `BackgroundTasks` per ADR-13,
+and implement `GET /documents/{id}/status` + `DELETE /documents/{id}`.
+
+**Prerequisites:** Phase 13.
+
+**Tasks:** implement `ingestion/pipeline.py` orchestration; implement the
+full status state machine per `docs/DOCUMENT_PROCESSING.md`; implement
+delete (removes chunks from Qdrant by `document_id`, per FR-015).
+
+**Files/components affected:** `backend/ingestion/pipeline.py`,
+`backend/api/documents.py`.
+
+**Validation:** end-to-end test: upload a real file → poll status →
+`READY` → chat against it successfully; upload a corrupt file → `FAILED`
+with correct reason; delete a document → its chunks are no longer
+retrievable.
+
+**Definition of done:** the full upload→process→ready→chat→delete lifecycle
+works against the real deployed stack (or local dev equivalent).
+
+---
+
+## Phase 15 [ ] — Knowledge-Base Separation
+
+**Objective:** verify and harden isolation (NFR-004) end-to-end now that
+both demo and user KBs are real.
+
+**Prerequisites:** Phase 14, Phase 4.
+
+**Tasks:** seed the real demo KB via a committed `backend/scripts/seed_demo_kb.py`
+(per ADR-07/`docs/DEPLOYMENT.md` recovery procedure); run the KB-isolation
+test suite against two real sessions with real uploaded documents.
+
+**Files/components affected:** `backend/scripts/seed_demo_kb.py`.
+
+**Validation:** `docs/TEST_STRATEGY.md` KB-isolation test passes against
+real data, not mocks.
+
+**Definition of done:** two independent browser sessions each upload
+different documents and confirm neither can retrieve the other's content,
+and both can independently query the shared demo KB.
+
+---
+
+## Phase 16 [ ] — Chat UI
+
+**Objective:** replace Phase 2's stubbed chat UI with real wiring against the
+now-functional backend.
+
+**Prerequisites:** Phase 12, Phase 2.
+
+**Tasks:** implement the real chat flow, citation rendering, KB selector
+behavior (switch clears context per FR-032), suggested questions, all per
+`docs/UI_UX.md`.
+
+**Files/components affected:** `frontend/src/`.
+
+**Validation:** manual run-through of every UI state in `docs/UI_UX.md`
+against the real local backend (browser testing per this session's
+guidance — start the dev server and click through it).
+
+**Definition of done:** all 13 states in `docs/UI_UX.md` are reachable and
+correct in a real browser against the real backend.
+
+---
+
+## Phase 17 [ ] — Error Handling
+
+**Objective:** verify every error scenario in `docs/REQUIREMENTS.md` §9
+(FR-050–056) end-to-end, frontend and backend together.
+
+**Prerequisites:** Phase 16.
+
+**Tasks:** trigger each error scenario manually (oversized file, wrong
+type, too many files, corrupt document, simulated LLM/Qdrant failure,
+empty KB) and confirm the UI shows the correct message per `docs/UI_UX.md`
+and `docs/SECURITY.md`'s error-sanitization rule (no raw exception ever
+visible).
+
+**Files/components affected:** `frontend/src/`, `backend/`.
+
+**Validation:** manual browser walkthrough + the negative-case tests from
+`docs/TEST_STRATEGY.md`.
+
+**Definition of done:** every FR-050–056 scenario produces the documented
+user-visible behavior, with no raw stack trace or provider payload ever
+reaching the browser.
+
+---
+
+## Phase 18 [ ] — Evaluation
+
+**Objective:** build and run the RAG evaluation suite against the real
+system.
+
+**Prerequisites:** Phase 15 (demo KB seeded and real), Phase 12.
+
+**Tasks:** populate `evaluation/dataset/demo_kb_cases.json` with real cases
+now that real demo content exists (replacing Phase 0's empty placeholder);
+implement `evaluation/scripts/run_evaluation.py` per `docs/RAG_EVALUATION.md`;
+run it and record results under `evaluation/results/`.
+
+**Files/components affected:** `evaluation/`.
+
+**Validation:** thresholds defined in `docs/RAG_EVALUATION.md` §11 are met,
+or explicitly documented as not-yet-met with a follow-up action.
+
+**Definition of done:** a real evaluation run completes and its results
+file exists; metrics reported anywhere (README, portfolio writeup) are
+copied from this real output, never estimated.
+
+---
+
+## Phase 19 [ ] — Testing
+
+**Objective:** complete the full test suite from `docs/TEST_STRATEGY.md`
+across all four levels.
+
+**Prerequisites:** Phase 17 (functionality complete enough to test
+meaningfully).
+
+**Tasks:** implement all named unit/integration/RAG/E2E tests from
+`docs/TEST_STRATEGY.md`'s traceability table; wire into CI.
+
+**Files/components affected:** `backend/tests/`, `frontend/tests/`, CI
+config.
+
+**Validation:** CI passes; traceability table in `docs/TEST_STRATEGY.md`
+has no unimplemented row.
+
+**Definition of done:** CI green on a clean clone; every FR-/NFR- ID in the
+traceability table has at least one passing test.
+
+---
+
+## Phase 20 [ ] — Security
+
+**Objective:** verify every mitigation in `docs/SECURITY.md` is actually
+implemented, not just planned.
+
+**Prerequisites:** Phase 19.
+
+**Tasks:** run `pip-audit`/`npm audit`; verify CORS is origin-restricted
+(not wildcard) against a real deployed frontend origin; verify no secret
+appears in any frontend bundle (grep built `dist/` output for key patterns);
+verify error responses never leak stack traces (manual check against a
+forced backend error).
+
+**Files/components affected:** cross-cutting; primarily verification, not
+new code.
+
+**Validation:** `docs/SECURITY.md`'s per-threat "V1 implementation" column
+is true for every row, checked manually.
+
+**Definition of done:** a security self-review confirms every V1-scoped
+mitigation in `docs/SECURITY.md` is live in the deployed system.
+
+---
+
+## Phase 21 [ ] — Deployment
+
+**Objective:** execute the deployment sequence in `docs/DEPLOYMENT.md` for
+real.
+
+**Prerequisites:** Phase 20.
+
+**Tasks:** follow `docs/DEPLOYMENT.md`'s 7-step sequence exactly (Qdrant →
+Groq → Render backend → seed demo KB → Cloudflare Pages frontend → CORS
+update → smoke test).
+
+**Files/components affected:** none (infra/config only); may require a
+final CORS-origin config commit.
+
+**Validation:** each step's own verification (health check, seed script
+success, etc.).
+
+**Definition of done:** the app is live at a public Cloudflare Pages URL,
+backed by the real deployed Render backend, Qdrant cluster, and Groq API —
+all on free tiers, no payment method entered anywhere.
+
+---
+
+## Phase 22 [ ] — Smoke Testing
+
+**Objective:** validate the live, publicly deployed system end-to-end,
+distinct from local/CI testing.
+
+**Prerequisites:** Phase 21.
+
+**Tasks:** from a real browser, against the real public URL: explore the
+demo KB and ask a suggested question; upload a real small document and chat
+against it; trigger one deliberate error case (oversized file); confirm a
+cold-start "waking up" state appears correctly after 15+ minutes of
+inactivity.
+
+**Files/components affected:** none (verification only).
+
+**Validation:** each journey from `docs/REQUIREMENTS.md` §3 works on the
+live public deployment.
+
+**Definition of done:** all primary user journeys succeed against the live
+public URL, observed directly in a browser (per this session's guidance to
+verify UI changes by using the feature, not just by passing tests).
+
+---
+
+## Phase 23 [ ] — Portfolio Documentation
+
+**Objective:** finalize `README.md` and any portfolio-facing writeup now
+that the system is real and deployed.
+
+**Prerequisites:** Phase 22.
+
+**Tasks:** fill in every placeholder section of `README.md` with real
+content (screenshots, real architecture summary, real evaluation numbers
+from Phase 18's actual run, real setup instructions verified against a
+fresh clone); remove any "not yet implemented" caveats that no longer apply.
+
+**Files/components affected:** `README.md`.
+
+**Validation:** a fresh clone, followed exactly per the README, results in
+a working local dev environment.
+
+**Definition of done:** `README.md` accurately describes the shipped system
+with no fabricated claims or stale placeholders.
+
+---
+
+## Dependency Summary
+
+```
+0 → 1 → {2, 3 in parallel} → 4
+1 → 3 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12
+                 8 → 13 → 14
+        (14 & 4) → 15
+(12 & 2) → 16 → 17 → 19
+(15 & 12) → 18
+19 → 20 → 21 → 22 → 23
+```

@@ -1,0 +1,28 @@
+# Secrets (docs/SECURITY.md — never commit)
+.env
+.env.local
+backend/.env
+frontend/.env
+
+# Backend (Python)
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.venv/
+backend/venv/
+*.pyc
+
+# Frontend (Node) — also covered by frontend/.gitignore
+frontend/node_modules/
+frontend/dist/
+
+# Evaluation results are generated, not committed content (docs/RAG_EVALUATION.md)
+evaluation/results/*
+!evaluation/results/.gitkeep
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Claude Code session-internal state (not project content)
+.claude/scheduled_tasks.lock

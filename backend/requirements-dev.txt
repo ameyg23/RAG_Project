@@ -1,0 +1,11 @@
+-r requirements.txt
+
+# Testing (docs/TEST_STRATEGY.md)
+pytest==8.3.4
+httpx==0.28.1
+
+# Lint/format (ROADMAP.md Phase 1)
+ruff==0.8.6
+
+# Dependency vulnerability scanning (docs/SECURITY.md)
+pip-audit==2.7.3
