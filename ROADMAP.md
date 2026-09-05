@@ -116,7 +116,7 @@ returns real `200`.
 
 ---
 
-## Phase 4 [ ] — Demo Documents
+## Phase 4 [x] — Demo Documents
 
 **Objective:** select and prepare the real content for the demo knowledge
 base (FR-001–004).

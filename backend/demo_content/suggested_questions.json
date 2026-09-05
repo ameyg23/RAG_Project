@@ -1,0 +1,32 @@
+[
+  {
+    "question": "How many days of PTO do full-time employees accrue per year?",
+    "source_document": "01_employee_handbook.md",
+    "expected_answer_summary": "15 days per year, accrued at 1.25 days per completed month, with up to 5 unused days rolling over.",
+    "verified_answerable": true
+  },
+  {
+    "question": "What pricing tiers does Beacon offer?",
+    "source_document": "02_product_faq.md",
+    "expected_answer_summary": "Four tiers: Free, Team ($8/user/mo), Business ($15/user/mo), and Enterprise (custom pricing).",
+    "verified_answerable": true
+  },
+  {
+    "question": "What should I do before my first day at Acme?",
+    "source_document": "03_onboarding_guide.md",
+    "expected_answer_summary": "Complete I-9 paperwork, choose equipment for shipping, and set up direct deposit via the onboarding portal.",
+    "verified_answerable": true
+  },
+  {
+    "question": "Does Acme require two-factor authentication?",
+    "source_document": "04_security_policy.md",
+    "expected_answer_summary": "Yes, 2FA is mandatory for every Acme account; must be enabled before accessing any internal system.",
+    "verified_answerable": true
+  },
+  {
+    "question": "What integrations does Beacon support?",
+    "source_document": "02_product_faq.md",
+    "expected_answer_summary": "Native integrations with Slack, GitHub, Google Calendar, and Zapier.",
+    "verified_answerable": true
+  }
+]
