@@ -184,7 +184,7 @@ matching the configuration table in `docs/RAG_PIPELINE.md`.
 
 ---
 
-## Phase 7 [ ] — Embeddings
+## Phase 7 [x] — Embeddings
 
 **Objective:** implement Stage 5/7 of `docs/RAG_PIPELINE.md` (embedding,
 query embedding).
