@@ -163,7 +163,7 @@ never a crash.
 
 ---
 
-## Phase 6 [ ] — Chunking
+## Phase 6 [x] — Chunking
 
 **Objective:** implement Stage 3–4 of `docs/RAG_PIPELINE.md` (chunking,
 metadata).
