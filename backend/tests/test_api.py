@@ -109,13 +109,19 @@ def test_upload_unsupported_type():
 
 
 def test_document_status_happy_path_and_404():
+    # Phase 14: real background processing runs synchronously within
+    # TestClient's request cycle, so by the time we poll status right
+    # after upload, extraction/chunking/embedding/upsert has already
+    # completed for this valid content - status is genuinely READY here,
+    # not UPLOADED (which was only correct back when Phase 3 had no real
+    # processing at all).
     files = [("files", ("c.txt", b"content", "text/plain"))]
     upload_resp = _upload(files, token="s6")
     document_id = upload_resp.json()["documents"][0]["document_id"]
 
     resp = client.get(f"/documents/{document_id}/status", headers={"X-Session-Token": "s6"})
     assert resp.status_code == 200
-    assert resp.json()["status"] == "UPLOADED"
+    assert resp.json()["status"] == "READY"
 
     resp = client.get("/documents/nonexistent-id/status", headers={"X-Session-Token": "s6"})
     assert resp.status_code == 404
@@ -205,38 +211,51 @@ def test_chat_llm_failure_maps_to_502():
 
 
 def test_upload_writes_file_to_temp_path_with_server_generated_name():
-    content = b"a real uploaded file's bytes"
+    # Phase 14 note: real background processing now reads this exact file
+    # and deletes it once done (ADR-11), synchronously within TestClient's
+    # request cycle - so we can no longer observe the file mid-flight.
+    # Instead, successful processing (READY) is itself proof the file was
+    # written to, and read from, the correct deterministic path: if the
+    # path were wrong, extraction would raise FileNotFoundError and the
+    # document would never reach READY.
+    content = b"A real uploaded file's bytes, valid extractable text content."
     files = [("files", ("notes.txt", content, "text/plain"))]
     resp = _upload(files, token="temp-path-test")
     assert resp.status_code == 202
     document_id = resp.json()["documents"][0]["document_id"]
 
+    status_resp = client.get(
+        f"/documents/{document_id}/status", headers={"X-Session-Token": "temp-path-test"}
+    )
+    assert status_resp.json()["status"] == "READY"
+
     temp_path = get_temp_upload_path(document_id, "txt")
-    try:
-        assert temp_path.exists()
-        assert temp_path.read_bytes() == content
-    finally:
-        temp_path.unlink(missing_ok=True)
+    assert not temp_path.exists()  # cleaned up after successful processing (ADR-11)
 
 
 def test_upload_path_traversal_filename_is_neutralized():
-    content = b"malicious-looking filename, ordinary content"
+    # The only place this file could legitimately land is the deterministic
+    # server-generated path - never anywhere implied by the raw filename.
+    # Reaching READY proves both the write and the read used that exact
+    # path: get_temp_upload_path() takes only document_id/file_type and
+    # structurally cannot see the raw filename, so if either side had
+    # somehow used it instead, extraction would fail to find the file.
+    content = b"Malicious-looking filename, ordinary real extractable text."
     files = [("files", ("../../../etc/evil.txt", content, "text/plain"))]
     resp = _upload(files, token="traversal-test")
     assert resp.status_code == 202
     document_id = resp.json()["documents"][0]["document_id"]
 
-    # The only place this file could legitimately land is the deterministic
-    # server-generated path - never anywhere implied by the raw filename.
+    status_resp = client.get(
+        f"/documents/{document_id}/status", headers={"X-Session-Token": "traversal-test"}
+    )
+    assert status_resp.json()["status"] == "READY"
+
     expected_path = get_temp_upload_path(document_id, "txt")
-    try:
-        assert expected_path.exists()
-        assert expected_path.read_bytes() == content
-        assert expected_path.parent == get_temp_upload_path("x", "txt").parent
-        assert "evil" not in str(expected_path)
-        assert ".." not in expected_path.parts
-    finally:
-        expected_path.unlink(missing_ok=True)
+    assert not expected_path.exists()  # cleaned up after successful processing (ADR-11)
+    assert expected_path.parent == get_temp_upload_path("x", "txt").parent
+    assert "evil" not in str(expected_path)
+    assert ".." not in expected_path.parts
 
 
 def test_upload_request_too_large_returns_413():
@@ -248,3 +267,112 @@ def test_upload_request_too_large_returns_413():
     assert resp.status_code == 413
     body = resp.json()
     assert body["error"]["code"] == "REQUEST_TOO_LARGE"
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_full_upload_process_ready_chat_delete_lifecycle():
+    # Phase 14's actual Definition of Done: the complete real lifecycle,
+    # not mocked at any stage. Content is real prose distinct enough that
+    # a grounded answer must actually come from it.
+    generation_module._client = None  # force a fresh real Groq client
+    content = (
+        b"The office mascot is a golden retriever named Biscuit who greets "
+        b"every visitor at the front desk and has his own employee badge."
+    )
+    files = [("files", ("mascot.txt", content, "text/plain"))]
+    token = "lifecycle-test"
+
+    upload_resp = _upload(files, token=token)
+    assert upload_resp.status_code == 202
+    body = upload_resp.json()
+    document_id = body["documents"][0]["document_id"]
+    kb_id = body["knowledge_base_id"]
+    assert body["documents"][0]["status"] == "UPLOADED"  # response predates background processing
+
+    status_resp = client.get(
+        f"/documents/{document_id}/status", headers={"X-Session-Token": token}
+    )
+    assert status_resp.json()["status"] == "READY"
+    assert status_resp.json()["failure_reason"] is None
+    assert vector_store.count_chunks_for_document(document_id, knowledge_base_id=kb_id) > 0
+
+    chat_resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": kb_id, "message": "What is the office mascot's name?"},
+        headers={"X-Session-Token": token},
+    )
+    assert chat_resp.status_code == 200
+    chat_body = chat_resp.json()
+    assert "Biscuit" in chat_body["answer"]
+    assert chat_body["sources"]
+
+    delete_resp = client.delete(f"/documents/{document_id}", headers={"X-Session-Token": token})
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["deleted"] is True
+    assert vector_store.count_chunks_for_document(document_id, knowledge_base_id=kb_id) == 0
+
+    # The KB now has zero ready documents again - back to the empty-KB case.
+    after_delete_resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": kb_id, "message": "What is the office mascot's name?"},
+        headers={"X-Session-Token": token},
+    )
+    assert after_delete_resp.status_code == 503
+    assert after_delete_resp.json()["error"]["code"] == "EMPTY_KNOWLEDGE_BASE"
+
+
+def test_upload_corrupted_file_ends_up_failed_with_correct_reason():
+    corrupted_bytes = (FIXTURES / "corrupted.pdf").read_bytes()
+    files = [("files", ("bad.pdf", corrupted_bytes, "application/pdf"))]
+    token = "corrupted-test"
+
+    upload_resp = _upload(files, token=token)
+    assert upload_resp.status_code == 202
+    document_id = upload_resp.json()["documents"][0]["document_id"]
+
+    status_resp = client.get(
+        f"/documents/{document_id}/status", headers={"X-Session-Token": token}
+    )
+    body = status_resp.json()
+    assert body["status"] == "FAILED"
+    assert body["failure_reason"] == (
+        "This file could not be read. It may be corrupted or in an unexpected format."
+    )
+
+    temp_path = get_temp_upload_path(document_id, "pdf")
+    assert not temp_path.exists()  # cleaned up even on failure (ADR-11)
+
+
+def test_upload_empty_content_ends_up_failed_with_correct_reason():
+    files = [("files", ("blank.md", b"   \n\n  ", "text/markdown"))]
+    token = "empty-content-test"
+
+    upload_resp = _upload(files, token=token)
+    assert upload_resp.status_code == 202
+    document_id = upload_resp.json()["documents"][0]["document_id"]
+
+    status_resp = client.get(
+        f"/documents/{document_id}/status", headers={"X-Session-Token": token}
+    )
+    body = status_resp.json()
+    assert body["status"] == "FAILED"
+    assert body["failure_reason"] == "No extractable text found (file may be a scanned image)."
+
+
+def test_delete_removes_chunks_from_qdrant_structurally():
+    content = b"This document exists only to prove delete really removes its chunks."
+    files = [("files", ("deleteme.txt", content, "text/plain"))]
+    token = "delete-structural-test"
+
+    upload_resp = _upload(files, token=token)
+    body = upload_resp.json()
+    document_id = body["documents"][0]["document_id"]
+    kb_id = body["knowledge_base_id"]
+
+    assert vector_store.count_chunks_for_document(document_id, knowledge_base_id=kb_id) > 0
+
+    client.delete(f"/documents/{document_id}", headers={"X-Session-Token": token})
+
+    assert vector_store.count_chunks_for_document(document_id, knowledge_base_id=kb_id) == 0

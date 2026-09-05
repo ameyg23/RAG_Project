@@ -1,9 +1,10 @@
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Header, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Header, UploadFile
 
 from errors import ApiError
+from ingestion.pipeline import process_document
 from models.schemas import (
     DeleteResponse,
     DocumentStatus,
@@ -11,6 +12,7 @@ from models.schemas import (
     UploadedDocumentSummary,
     UploadResponse,
 )
+from retrieval import vector_store
 from store import (
     DEMO_KB_ID,
     create_document,
@@ -47,6 +49,7 @@ def get_temp_upload_path(document_id: str, file_type: str) -> Path:
 
 @router.post("/documents/upload", response_model=UploadResponse, status_code=202)
 async def upload_documents(
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(default=[]),
     x_session_token: str | None = Header(default=None),
 ):
@@ -96,6 +99,14 @@ async def upload_documents(
         # extension, never f.filename (docs/SECURITY.md Path Traversal).
         temp_path = get_temp_upload_path(doc["document_id"], ext)
         temp_path.write_bytes(data)
+        background_tasks.add_task(
+            process_document,
+            doc["document_id"],
+            temp_path,
+            knowledge_base_id=kb_id,
+            document_name=doc["filename"],
+            file_type=ext,
+        )
         created.append(
             UploadedDocumentSummary(
                 document_id=doc["document_id"],
@@ -138,5 +149,8 @@ def delete_document_route(document_id: str, x_session_token: str | None = Header
     if not x_session_token or not session_owns_kb(x_session_token, doc["knowledge_base_id"]):
         raise ApiError(403, "FORBIDDEN_KNOWLEDGE_BASE", "You do not have access to this document.")
 
+    # FR-015: deleting a document must remove its chunks from Qdrant, not
+    # just the mock-store record - this was simply missing before.
+    vector_store.delete_document(document_id, knowledge_base_id=doc["knowledge_base_id"])
     deleted = delete_document(document_id)
     return DeleteResponse(document_id=document_id, deleted=deleted)

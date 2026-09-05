@@ -92,6 +92,25 @@ def delete_document(document_id: str) -> bool:
     return False
 
 
+def update_document_status(
+    document_id: str,
+    *,
+    status: str,
+    failure_reason: str | None = None,
+    chunk_count: int | None = None,
+) -> None:
+    """No-op if document_id isn't found - a document could theoretically be
+    deleted concurrently with its own background processing finishing."""
+    doc = _documents.get(document_id)
+    if doc is None:
+        return
+    doc["status"] = status
+    if failure_reason is not None:
+        doc["failure_reason"] = failure_reason
+    if chunk_count is not None:
+        doc["chunk_count"] = chunk_count
+
+
 def ensure_session_kb(session_token: str) -> str:
     """Derive the session's user KB id and record ownership (first upload)."""
     kb_id = derive_user_kb_id(session_token)

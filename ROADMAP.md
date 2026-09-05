@@ -358,7 +358,7 @@ server-generated names.
 
 ---
 
-## Phase 14 [ ] — Processing Status
+## Phase 14 [x] — Processing Status
 
 **Objective:** wire Phases 5–8's pipeline into `BackgroundTasks` per ADR-13,
 and implement `GET /documents/{id}/status` + `DELETE /documents/{id}`.
