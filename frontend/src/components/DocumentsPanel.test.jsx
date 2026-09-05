@@ -17,6 +17,7 @@ vi.mock('../api/client', async (importOriginal) => {
 })
 
 import {
+  ApiError,
   deleteDocument,
   getDocumentStatus,
   getHealth,
@@ -153,5 +154,74 @@ describe('DocumentsPanel', () => {
 
     await waitFor(() => expect(deleteDocument).toHaveBeenCalledWith('d3'))
     expect(screen.queryByText(/c\.txt/)).not.toBeInTheDocument()
+  })
+
+  // Phase 17: FR-050-056 error scenarios, client-side validation half.
+  it('rejects an oversized file before ever calling the upload API', async () => {
+    render(
+      <SessionProvider>
+        <KnowledgeBaseSelector />
+        <DocumentsPanel />
+      </SessionProvider>
+    )
+    fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
+
+    const bigFile = new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'big.txt', {
+      type: 'text/plain',
+    })
+    fireEvent.change(screen.getByLabelText(/upload documents/i), { target: { files: [bigFile] } })
+
+    expect(screen.getByText(/larger than 5mb/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /upload/i })).toBeDisabled()
+    expect(uploadDocuments).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unsupported file type before ever calling the upload API', async () => {
+    render(
+      <SessionProvider>
+        <KnowledgeBaseSelector />
+        <DocumentsPanel />
+      </SessionProvider>
+    )
+    fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
+
+    const badFile = new File(['x'], 'virus.exe', { type: 'application/octet-stream' })
+    fireEvent.change(screen.getByLabelText(/upload documents/i), { target: { files: [badFile] } })
+
+    expect(screen.getByText(/isn't a supported type/i)).toBeInTheDocument()
+    expect(uploadDocuments).not.toHaveBeenCalled()
+  })
+
+  it('rejects more than 5 files before ever calling the upload API', async () => {
+    render(
+      <SessionProvider>
+        <KnowledgeBaseSelector />
+        <DocumentsPanel />
+      </SessionProvider>
+    )
+    fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
+
+    const sixFiles = Array.from({ length: 6 }, (_, i) => makeFile(`f${i}.txt`))
+    fireEvent.change(screen.getByLabelText(/upload documents/i), { target: { files: sixFiles } })
+
+    expect(screen.getByText(/up to 5 files/i)).toBeInTheDocument()
+    expect(uploadDocuments).not.toHaveBeenCalled()
+  })
+
+  it('shows the sanitized server error message when the API rejects an upload', async () => {
+    uploadDocuments.mockRejectedValue(
+      new ApiError('UNSUPPORTED_FILE_TYPE', '"a.txt" has an unsupported file type.', 400)
+    )
+    render(
+      <SessionProvider>
+        <KnowledgeBaseSelector />
+        <DocumentsPanel />
+      </SessionProvider>
+    )
+    fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
+    fireEvent.change(screen.getByLabelText(/upload documents/i), { target: { files: [makeFile()] } })
+    fireEvent.click(screen.getByRole('button', { name: /upload/i }))
+
+    expect(await screen.findByText(/unsupported file type/i)).toBeInTheDocument()
   })
 })

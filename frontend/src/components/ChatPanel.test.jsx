@@ -15,7 +15,7 @@ vi.mock('../api/client', async (importOriginal) => {
   }
 })
 
-import { getHealth, listDocuments, listKnowledgeBases, sendChatMessage } from '../api/client'
+import { ApiError, getHealth, listDocuments, listKnowledgeBases, sendChatMessage } from '../api/client'
 
 function mockDefaults({ suggestedQuestions = ['What is X?'], extraKbs = [] } = {}) {
   getHealth.mockResolvedValue({ status: 'ok', session_token: 'test-token', vector_store: 'connected' })
@@ -213,5 +213,50 @@ describe('ChatPanel', () => {
     )
     fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
     expect(await screen.findByPlaceholderText(/no ready documents yet/i)).toBeDisabled()
+  })
+
+  // Phase 17: FR-054/FR-055 - LLM/vector-DB failures must show the sanitized
+  // server message with a retry option, never a raw exception.
+  it('shows a retryable error for a simulated LLM failure (502)', async () => {
+    sendChatMessage.mockRejectedValueOnce(
+      new ApiError(
+        'LLM_UNAVAILABLE',
+        'The answer service is temporarily unavailable. Please try again shortly.',
+        502
+      )
+    )
+    render(
+      <SessionProvider>
+        <ChatPanel />
+      </SessionProvider>
+    )
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello?' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    expect(await screen.findByText(/temporarily unavailable/i)).toBeInTheDocument()
+    const retryButton = screen.getByRole('button', { name: /try again/i })
+    expect(retryButton).toBeInTheDocument()
+
+    sendChatMessage.mockResolvedValueOnce({ answer: 'Recovered answer.', sources: [] })
+    fireEvent.click(retryButton)
+    expect(await screen.findByText(/recovered answer/i)).toBeInTheDocument()
+  })
+
+  // FR-054's error table treats 403 as non-retryable (a permissions problem,
+  // not a transient one) - no "Try again" button should be offered for it.
+  it('shows a non-retryable error with no retry button for a 403', async () => {
+    sendChatMessage.mockRejectedValueOnce(
+      new ApiError('FORBIDDEN_KNOWLEDGE_BASE', 'You do not have access to this knowledge base.', 403)
+    )
+    render(
+      <SessionProvider>
+        <ChatPanel />
+      </SessionProvider>
+    )
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello?' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    expect(await screen.findByText(/do not have access/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument()
   })
 })

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Header, UploadFile
 
+from api.knowledge_bases import demo_document_summary_by_id
 from errors import ApiError
 from ingestion.pipeline import process_document
 from models.schemas import (
@@ -14,12 +15,12 @@ from models.schemas import (
 )
 from retrieval import vector_store
 from store import (
-    DEMO_KB_ID,
     create_document,
     delete_document,
     ensure_session_kb,
     get_document,
     get_or_create_session,
+    is_demo_document_id,
     session_owns_kb,
 )
 
@@ -120,15 +121,26 @@ async def upload_documents(
 
 @router.get("/documents/{document_id}/status", response_model=DocumentStatusResponse)
 def document_status(document_id: str, x_session_token: str | None = Header(default=None)):
+    # Demo documents are seeded offline and never pass through
+    # create_document(), so the mock store has no record of them at all -
+    # check this first, or a real, ready demo document incorrectly looks
+    # like a 404 "doesn't exist" (Phase 17 finding).
+    if is_demo_document_id(document_id):
+        demo_doc = demo_document_summary_by_id(document_id)
+        if demo_doc is None:
+            raise ApiError(404, "DOCUMENT_NOT_FOUND", "That document does not exist.")
+        return DocumentStatusResponse(
+            document_id=demo_doc["document_id"],
+            status=DocumentStatus(demo_doc["status"]),
+            failure_reason=demo_doc["failure_reason"],
+        )
+
     doc = get_document(document_id)
     if doc is None:
         raise ApiError(404, "DOCUMENT_NOT_FOUND", "That document does not exist.")
 
-    if doc["knowledge_base_id"] != DEMO_KB_ID:
-        if not x_session_token or not session_owns_kb(x_session_token, doc["knowledge_base_id"]):
-            raise ApiError(
-                403, "FORBIDDEN_KNOWLEDGE_BASE", "You do not have access to this document."
-            )
+    if not x_session_token or not session_owns_kb(x_session_token, doc["knowledge_base_id"]):
+        raise ApiError(403, "FORBIDDEN_KNOWLEDGE_BASE", "You do not have access to this document.")
 
     return DocumentStatusResponse(
         document_id=doc["document_id"],
@@ -139,12 +151,16 @@ def document_status(document_id: str, x_session_token: str | None = Header(defau
 
 @router.delete("/documents/{document_id}", response_model=DeleteResponse)
 def delete_document_route(document_id: str, x_session_token: str | None = Header(default=None)):
+    # Same reasoning as document_status above: a demo document_id must be
+    # recognized before the mock-store lookup, so the response is the
+    # documented 403 "demo documents cannot be deleted", not a misleading
+    # 404 "that document does not exist" (Phase 17 finding).
+    if is_demo_document_id(document_id):
+        raise ApiError(403, "FORBIDDEN_KNOWLEDGE_BASE", "Demo documents cannot be deleted.")
+
     doc = get_document(document_id)
     if doc is None:
         raise ApiError(404, "DOCUMENT_NOT_FOUND", "That document does not exist.")
-
-    if doc["knowledge_base_id"] == DEMO_KB_ID:
-        raise ApiError(403, "FORBIDDEN_KNOWLEDGE_BASE", "Demo documents cannot be deleted.")
 
     if not x_session_token or not session_owns_kb(x_session_token, doc["knowledge_base_id"]):
         raise ApiError(403, "FORBIDDEN_KNOWLEDGE_BASE", "You do not have access to this document.")

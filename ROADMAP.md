@@ -476,7 +476,7 @@ documents) is still being clarified — not yet resolved as of this note.
 
 ---
 
-## Phase 17 [ ] — Error Handling
+## Phase 17 [x] — Error Handling
 
 **Objective:** verify every error scenario in `docs/REQUIREMENTS.md` §9
 (FR-050–056) end-to-end, frontend and backend together.

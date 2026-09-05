@@ -40,44 +40,54 @@ def _demo_suggested_questions() -> list[str]:
     return [item["question"] for item in data]
 
 
+def _demo_document_summary(filename: str) -> dict | None:
+    """One demo document's real summary: real file stats + a real Qdrant
+    chunk count. Always reported READY - it's only ever looked up because
+    it's a file this project committed and seeds; if seeding somehow left
+    it with zero chunks, chunk_count reports that honestly rather than
+    silently claiming a nonzero-content status. Shared by the KB-listing
+    endpoints below AND by api/documents.py's status/delete routes, which
+    need to recognize a demo document_id before falling back to the mock
+    store (which never has a record of demo documents at all - they're
+    seeded offline, bypassing it entirely, ADR-12)."""
+    path = DEMO_CONTENT_DIR / filename
+    if not path.exists():
+        return None
+    document_id = path.stem
+    stat = path.stat()
+    chunk_count = vector_store.count_chunks_for_document(document_id, knowledge_base_id=DEMO_KB_ID)
+    return {
+        "document_id": document_id,
+        "filename": filename,
+        "file_type": path.suffix.lstrip("."),
+        "size_bytes": stat.st_size,
+        "status": "READY",
+        "failure_reason": None,
+        "uploaded_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+        "chunk_count": chunk_count,
+    }
+
+
 def _demo_document_summaries() -> list[dict]:
     """Real ingested demo documents, derived from store.DEMO_DOCUMENT_FILES
-    (the exact same list backend/scripts/seed_demo_kb.py ingests) plus real
-    file stats and a real Qdrant chunk count per document. Fixes the Phase
-    15 gap where this endpoint reported document_count: 0 for kb_demo
+    (the exact same list backend/scripts/seed_demo_kb.py ingests). Fixes the
+    Phase 15 gap where this endpoint reported document_count: 0 for kb_demo
     forever, even after real seeding, because it read the in-process mock
     store instead - the mock store is per-process memory (ADR-12) and the
-    seed script is a separate offline process, so it was structurally
-    never going to be populated that way.
-
-    Every demo document is reported READY: it's only in this list because
-    it's a file this project committed and seeds - if seeding somehow left
-    one with zero chunks, chunk_count reports that honestly rather than
-    silently claiming a nonzero-content status.
+    seed script is a separate offline process, so it was structurally never
+    going to be populated that way.
     """
-    summaries = []
+    summaries = (_demo_document_summary(f) for f in DEMO_DOCUMENT_FILES)
+    return [s for s in summaries if s is not None]
+
+
+def demo_document_summary_by_id(document_id: str) -> dict | None:
+    """Public entry point for api/documents.py - looks up one demo document
+    by its document_id (a filename stem, e.g. "01_employee_handbook")."""
     for filename in DEMO_DOCUMENT_FILES:
-        path = DEMO_CONTENT_DIR / filename
-        if not path.exists():
-            continue
-        document_id = path.stem
-        stat = path.stat()
-        chunk_count = vector_store.count_chunks_for_document(
-            document_id, knowledge_base_id=DEMO_KB_ID
-        )
-        summaries.append(
-            {
-                "document_id": document_id,
-                "filename": filename,
-                "file_type": path.suffix.lstrip("."),
-                "size_bytes": stat.st_size,
-                "status": "READY",
-                "failure_reason": None,
-                "uploaded_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC),
-                "chunk_count": chunk_count,
-            }
-        )
-    return summaries
+        if Path(filename).stem == document_id:
+            return _demo_document_summary(filename)
+    return None
 
 
 @router.get("/knowledge-bases", response_model=KnowledgeBasesResponse)

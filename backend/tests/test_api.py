@@ -144,6 +144,19 @@ def test_document_status_happy_path_and_404():
     assert resp.json()["error"]["code"] == "DOCUMENT_NOT_FOUND"
 
 
+def test_document_status_for_real_demo_document_is_ready_not_404():
+    # Phase 17 finding: a demo document is seeded offline and never passes
+    # through create_document(), so the mock store has no record of it at
+    # all - status previously misreported this as 404 DOCUMENT_NOT_FOUND
+    # for a document that genuinely exists and is ready. No upload/token
+    # needed - this is a real, publicly-known demo document_id.
+    resp = client.get("/documents/01_employee_handbook/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "READY"
+    assert body["failure_reason"] is None
+
+
 def test_delete_document_happy_path_and_forbidden():
     files = [("files", ("d.txt", b"content", "text/plain"))]
     upload_resp = _upload(files, token="s7")
@@ -155,6 +168,15 @@ def test_delete_document_happy_path_and_forbidden():
     resp = client.delete(f"/documents/{document_id}", headers={"X-Session-Token": "s7"})
     assert resp.status_code == 200
     assert resp.json()["deleted"] is True
+
+
+def test_delete_demo_document_returns_403_not_404():
+    # Same Phase 17 finding as above, for DELETE - the documented behavior
+    # (docs/API.md) is 403 "demo documents cannot be deleted", not a
+    # misleading 404 "that document does not exist".
+    resp = client.delete("/documents/02_product_faq")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN_KNOWLEDGE_BASE"
 
 
 def test_chat_against_empty_demo_kb():

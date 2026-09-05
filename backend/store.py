@@ -6,6 +6,7 @@ once ingestion (Phase 5+) lands.
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 DEMO_KB_ID = "kb_demo"
 
@@ -20,6 +21,20 @@ DEMO_DOCUMENT_FILES = [
     "03_onboarding_guide.md",
     "04_security_policy.md",
 ]
+
+_DEMO_DOCUMENT_IDS = {Path(f).stem for f in DEMO_DOCUMENT_FILES}
+
+
+def is_demo_document_id(document_id: str) -> bool:
+    """True for one of the 4 real demo document ids. These are seeded
+    offline (backend/scripts/seed_demo_kb.py) and never pass through
+    create_document(), so the mock store below has no record of them at
+    all - callers that need to distinguish "unknown document" from "this
+    is a real demo document you're not allowed to write to" must check
+    this BEFORE falling back to get_document()'s None-means-404 behavior,
+    or a demo document_id incorrectly looks indistinguishable from a
+    nonexistent one."""
+    return document_id in _DEMO_DOCUMENT_IDS
 
 # session_token -> owned user knowledge_base_id (None until first upload)
 _sessions: dict[str, str | None] = {}
