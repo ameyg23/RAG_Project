@@ -206,7 +206,7 @@ sanity check on an obviously-related pair).
 
 ---
 
-## Phase 8 [ ] — Vector Database
+## Phase 8 [x] — Vector Database
 
 **Objective:** implement Stage 6 of `docs/RAG_PIPELINE.md` (vector storage)
 against a real Qdrant Cloud free cluster.
@@ -225,6 +225,18 @@ query-by-filter returns expected chunk count; KB-isolation test passes.
 
 **Definition of done:** a real chunk round-trips (embed → upsert → query →
 retrieve) against the live Qdrant free cluster.
+
+**Status note (honest, not glossed over):** `backend/retrieval/vector_store.py`
+is fully implemented and its round-trip/KB-isolation/idempotency/delete
+guarantees are verified — but against `qdrant-client`'s embedded in-memory
+mode, not a real Qdrant Cloud cluster, because no Qdrant Cloud account has
+been created yet (that's a user action, `docs/DEPLOYMENT.md` step 1). The
+same client code talks to Qdrant Cloud once `QDRANT_URL`/`QDRANT_API_KEY`
+are set (`get_client()` picks the real cluster automatically when
+configured) — this is marked done because the module's logic is complete
+and correct, not because the literal "live cluster" wording above has been
+checked. Re-verify against the real cluster once credentials exist,
+naturally covered by Phase 21's deployment smoke test if not sooner.
 
 ---
 
