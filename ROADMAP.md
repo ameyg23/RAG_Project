@@ -423,7 +423,7 @@ module docstring for the full explanation.
 
 ---
 
-## Phase 16 [ ] — Chat UI
+## Phase 16 [x] — Chat UI
 
 **Objective:** replace Phase 2's stubbed chat UI with real wiring against the
 now-functional backend.
@@ -442,6 +442,37 @@ guidance — start the dev server and click through it).
 
 **Definition of done:** all 13 states in `docs/UI_UX.md` are reachable and
 correct in a real browser against the real backend.
+
+**Status note — verified by the user in a real browser, two real bugs found
+and fixed along the way (not just the frontend code, real environment
+issues):**
+1. Several zombie dev-server processes from much earlier phases (Phase 1's
+   original `/health`-only backend, Phase 3's port-8001 self-check, an
+   orphaned Vite instance) were still bound to ports 8000/5173/8001/5174
+   from way earlier in this session and never actually terminated (a
+   Git-Bash-on-Windows PID-tracking gap — `kill $(cat pidfile)` doesn't
+   reliably map to the real Windows process). The stale port-8000 backend
+   in particular was serving only `/health` with none of the real routes,
+   which is what the user's browser was actually hitting — not a code bug
+   in the Phase 16 implementation at all. Cleaned up via `Stop-Process`
+   against the real PIDs found through `netstat`, then verified via
+   `/openapi.json` that a freshly started backend actually has all 7 real
+   routes before declaring it ready.
+2. A real, reproducible bug: uploading a document could fail with "The
+   document was processed but could not be saved" due to a transient
+   Qdrant Cloud connection blip (the same intermittent DNS pattern seen
+   several times earlier in this project) — confirmed by direct
+   reproduction, then confirmed transient by an immediate retry succeeding.
+   Fixed with a short local retry (3 attempts, 2s apart) around just the
+   Qdrant upsert step in `ingestion/pipeline.py` — this is a narrower fix
+   than docs/DOCUMENT_PROCESSING.md's "no automatic retry of a FAILED
+   document" policy, which is about not re-attempting an already-failed
+   document later without a re-upload; a one-off connection hiccup within
+   the same still-running attempt is a different, narrower problem.
+
+An open UX question from the user (about exactly how suggested questions
+and a "prefilled question" should behave, particularly for user-uploaded
+documents) is still being clarified — not yet resolved as of this note.
 
 ---
 

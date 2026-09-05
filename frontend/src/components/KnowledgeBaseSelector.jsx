@@ -1,14 +1,12 @@
 import { DEMO_KB_ID } from '../constants'
 import { useSession } from '../context/SessionContext'
 
-// Phase 2: static placeholder KB list (no live listKnowledgeBases() call yet —
-// Phase 16 wires this up for real). "Your documents" always starts empty
-// until a real upload exists.
-const USER_KB_ID = 'kb_user_placeholder'
-const hasUserDocuments = false
-
 export default function KnowledgeBaseSelector() {
-  const { activeKnowledgeBaseId, setActiveKnowledgeBaseId } = useSession()
+  const { activeKnowledgeBaseId, setActiveKnowledgeBaseId, userKnowledgeBaseId, knowledgeBases } =
+    useSession()
+
+  const userKb = knowledgeBases.find((kb) => kb.knowledge_base_id === userKnowledgeBaseId)
+  const hasUserDocuments = Boolean(userKb && userKb.document_count > 0)
 
   return (
     <div className="kb-selector" role="tablist" aria-label="Knowledge base">
@@ -24,9 +22,9 @@ export default function KnowledgeBaseSelector() {
       <button
         type="button"
         role="tab"
-        aria-selected={activeKnowledgeBaseId === USER_KB_ID}
-        className={`kb-badge kb-badge--user${activeKnowledgeBaseId === USER_KB_ID ? ' is-active' : ''}`}
-        onClick={() => setActiveKnowledgeBaseId(USER_KB_ID)}
+        aria-selected={activeKnowledgeBaseId === userKnowledgeBaseId}
+        className={`kb-badge kb-badge--user${activeKnowledgeBaseId === userKnowledgeBaseId ? ' is-active' : ''}`}
+        onClick={() => userKnowledgeBaseId && setActiveKnowledgeBaseId(userKnowledgeBaseId)}
       >
         Your documents
         {!hasUserDocuments && <span className="kb-badge__hint"> — Empty, upload to get started</span>}

@@ -1,25 +1,157 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionProvider } from '../context/SessionContext'
 import ChatPanel from './ChatPanel'
+import KnowledgeBaseSelector from './KnowledgeBaseSelector'
+
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    getHealth: vi.fn(),
+    listKnowledgeBases: vi.fn(),
+    listDocuments: vi.fn(),
+    sendChatMessage: vi.fn(),
+  }
+})
+
+import { getHealth, listDocuments, listKnowledgeBases, sendChatMessage } from '../api/client'
+
+function mockDefaults({ suggestedQuestions = ['What is X?'], extraKbs = [] } = {}) {
+  getHealth.mockResolvedValue({ status: 'ok', session_token: 'test-token', vector_store: 'connected' })
+  listKnowledgeBases.mockResolvedValue({
+    knowledge_bases: [
+      {
+        knowledge_base_id: 'kb_demo',
+        kind: 'demo',
+        name: 'Demo',
+        document_count: 0,
+        suggested_questions: suggestedQuestions,
+      },
+      ...extraKbs,
+    ],
+  })
+  listDocuments.mockResolvedValue({ knowledge_base_id: 'kb_user_test-token', documents: [] })
+}
 
 describe('ChatPanel', () => {
-  it('renders a disabled input when the active knowledge base has no ready documents', () => {
-    render(
-      <SessionProvider>
-        <ChatPanel />
-      </SessionProvider>
-    )
-    expect(screen.getByPlaceholderText(/no ready documents yet/i)).toBeDisabled()
-    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled()
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    mockDefaults()
   })
 
-  it('shows an empty-thread placeholder message', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('is never disabled for the demo knowledge base', () => {
     render(
       <SessionProvider>
         <ChatPanel />
       </SessionProvider>
     )
-    expect(screen.getByText(/ask a question once this knowledge base has ready documents/i)).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).not.toBeDisabled()
+  })
+
+  it('renders suggested question chips for the demo knowledge base', async () => {
+    render(
+      <SessionProvider>
+        <ChatPanel />
+      </SessionProvider>
+    )
+    expect(await screen.findByRole('button', { name: /what is x\?/i })).toBeInTheDocument()
+  })
+
+  it('sends a message and renders the answer with its sources', async () => {
+    sendChatMessage.mockResolvedValue({
+      answer: 'The answer is 15.',
+      sources: [
+        {
+          document_id: 'd1',
+          document_name: 'doc.md',
+          locator: 'chunk 1',
+          snippet: 'snippet text',
+          is_removed: false,
+        },
+      ],
+    })
+    render(
+      <SessionProvider>
+        <ChatPanel />
+      </SessionProvider>
+    )
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'How many?' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    expect(await screen.findByText('How many?')).toBeInTheDocument()
+    expect(await screen.findByText(/the answer is 15/i)).toBeInTheDocument()
+    expect(screen.getByText('doc.md')).toBeInTheDocument()
+    expect(screen.getByText('chunk 1')).toBeInTheDocument()
+  })
+
+  it('shows the cold-start message if the response takes longer than 5 seconds', async () => {
+    vi.useFakeTimers()
+    let resolveChat
+    sendChatMessage.mockReturnValue(
+      new Promise((resolve) => {
+        resolveChat = resolve
+      })
+    )
+    render(
+      <SessionProvider>
+        <ChatPanel />
+      </SessionProvider>
+    )
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Hello?' } })
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    // Fake timers are active, so synchronous getByText (not findByText's
+    // real-timer polling, which would hang forever here) is used throughout.
+    expect(screen.getByText(/thinking/i)).toBeInTheDocument()
+
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(screen.getByText(/waking up the server/i)).toBeInTheDocument()
+
+    resolveChat({ answer: 'done', sources: [] })
+  })
+
+  it('disables the input for a user knowledge base with zero ready documents', async () => {
+    mockDefaults({
+      suggestedQuestions: [],
+      extraKbs: [
+        {
+          knowledge_base_id: 'kb_user_test-token',
+          kind: 'user',
+          name: 'Your documents',
+          document_count: 1,
+          suggested_questions: [],
+        },
+      ],
+    })
+    listDocuments.mockResolvedValue({
+      knowledge_base_id: 'kb_user_test-token',
+      documents: [
+        {
+          document_id: 'd1',
+          filename: 'f.txt',
+          file_type: 'txt',
+          size_bytes: 10,
+          status: 'PROCESSING',
+          failure_reason: null,
+          uploaded_at: '2026-01-01T00:00:00Z',
+          chunk_count: 0,
+        },
+      ],
+    })
+
+    render(
+      <SessionProvider>
+        <KnowledgeBaseSelector />
+        <ChatPanel />
+      </SessionProvider>
+    )
+    fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
+    expect(await screen.findByPlaceholderText(/no ready documents yet/i)).toBeDisabled()
   })
 })
