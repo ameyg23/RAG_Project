@@ -8,6 +8,7 @@ in directly, avoiding a circular import.
 """
 
 import logging
+import time
 from pathlib import Path
 
 from ingestion.chunk import chunk_document
@@ -24,6 +25,17 @@ CORRUPTED_DOCUMENT_MESSAGE = (
 SAVE_FAILURE_MESSAGE = (
     "The document was processed but could not be saved. Please try uploading again."
 )
+
+# Transient network/DNS blips connecting to Qdrant Cloud have been observed
+# repeatedly throughout this project's development (always resolving on an
+# immediate retry) - this is a short, local retry around a single already-
+# running background attempt, not the "no automatic retry of a FAILED
+# document" policy from docs/DOCUMENT_PROCESSING.md, which is about not
+# re-attempting a document that has already reached FAILED, later, without
+# the user re-uploading. A one-off connection hiccup within the same
+# attempt is a different, narrower problem worth smoothing over here.
+UPSERT_MAX_ATTEMPTS = 3
+UPSERT_RETRY_DELAY_SECONDS = 2
 
 
 def process_document(
@@ -59,10 +71,31 @@ def process_document(
         )
         vectors = embed_texts([c.text for c in chunks])
 
-        try:
-            upsert_chunks(chunks, vectors)
-        except Exception:
-            logger.exception("Vector store write failed for document %s", document_id)
+        last_exc = None
+        for attempt in range(1, UPSERT_MAX_ATTEMPTS + 1):
+            try:
+                upsert_chunks(chunks, vectors)
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 - broad by design, see module docstring
+                last_exc = exc
+                logger.warning(
+                    "Vector store write attempt %d/%d failed for document %s: %s",
+                    attempt,
+                    UPSERT_MAX_ATTEMPTS,
+                    document_id,
+                    exc,
+                )
+                if attempt < UPSERT_MAX_ATTEMPTS:
+                    time.sleep(UPSERT_RETRY_DELAY_SECONDS)
+
+        if last_exc is not None:
+            logger.exception(
+                "Vector store write failed for document %s after %d attempts",
+                document_id,
+                UPSERT_MAX_ATTEMPTS,
+                exc_info=last_exc,
+            )
             update_document_status(
                 document_id, status="FAILED", failure_reason=SAVE_FAILURE_MESSAGE
             )
