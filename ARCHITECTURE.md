@@ -20,7 +20,7 @@ flowchart LR
 
     subgraph External["External free-tier services"]
         VDB[("Qdrant Cloud\nvector store")]
-        LLM["Groq API\n(Llama 3.3 70B)"]
+        LLM["Groq API\n(qwen/qwen3.8-27b)"]
     end
 
     UI -- "HTTPS: upload, status, chat" --> API

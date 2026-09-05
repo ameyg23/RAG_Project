@@ -687,6 +687,14 @@ success, etc.).
 backed by the real deployed Render backend, Qdrant cluster, and Groq API —
 all on free tiers, no payment method entered anywhere.
 
+**Status note:** deliberately deferred, not blocked by anything technical.
+This phase requires creating accounts (GitHub to host the repo — no git
+remote exists yet — plus Render and Cloudflare Pages), which is outside
+what Claude can do autonomously. The user has chosen to hold off:
+additional UI changes are planned first, and deployment will follow once
+those land. `render.yaml` (repo root) is already prepared so the Render
+side of this phase is a one-step Blueprint deploy once an account exists.
+
 ---
 
 ## Phase 22 [ ] — Smoke Testing
@@ -711,6 +719,13 @@ live public deployment.
 public URL, observed directly in a browser (per this session's guidance to
 verify UI changes by using the feature, not just by passing tests).
 
+**Status note:** blocked on Phase 21 (not yet deployed); see that phase's
+status note. All four journeys have equivalent coverage against the local
+system already (backend E2E tests in Phase 19, plus this session's own
+fresh-clone local run), but that is not a substitute for this phase's
+explicit scope — live-deployment behaviors like the Render cold-start
+"waking up" state cannot be observed until something is actually deployed.
+
 ---
 
 ## Phase 23 [ ] — Portfolio Documentation
@@ -732,6 +747,29 @@ a working local dev environment.
 
 **Definition of done:** `README.md` accurately describes the shipped system
 with no fabricated claims or stale placeholders.
+
+**Status note:** done as far as possible without a live deployment.
+`README.md` was fully rewritten with real content for every section that
+doesn't depend on Phase 21/22: overview, problem statement, features (only
+ones actually implemented and tested), an architecture summary, the real
+tech stack, real Setup instructions (re-verified this session against a
+true fresh-clone snapshot via `git archive` into a scratch directory — a
+clean venv + `pip install`, `npm ci`, both servers started, `/health`
+checked — not just re-run against an already-configured machine; this run
+also incidentally caught a real transient Qdrant Cloud DNS blip and
+confirmed Phase 19's new health check correctly reported "degraded" before
+it cleared on its own, exactly the behavior it was added to provide), the
+real Phase 18 evaluation numbers, real Phase 19 test counts, and an honest
+Limitations section including the Phase 20 dependency-vulnerability
+caveat. Two sections remain genuine placeholders, both correctly requiring
+a live deployment that hasn't happened yet (deferred by the user's own
+choice, see Phase 21's status note): **Screenshots** (a real local UI
+exists and was manually tested earlier in this project, but this session's
+attempt to capture one via Claude-in-Chrome failed — the browser extension
+did not connect) and **Demo** (no live URL exists). `ARCHITECTURE.md`'s
+diagram was also found stale during this pass (still labeled the
+long-superseded `Llama 3.3 70B` instead of the actual `qwen/qwen3.8-27b`,
+ADR-08) and fixed while writing this section.
 
 ---
 
