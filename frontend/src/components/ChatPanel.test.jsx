@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionProvider } from '../context/SessionContext'
-import ChatPanel from './ChatPanel'
+import ChatPanel, { META_PROMPT } from './ChatPanel'
 import KnowledgeBaseSelector from './KnowledgeBaseSelector'
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -54,13 +54,36 @@ describe('ChatPanel', () => {
     expect(screen.getByRole('textbox')).not.toBeDisabled()
   })
 
-  it('pre-fills the composer with the first suggested question on landing, not yet sent', async () => {
+  it('pre-fills the composer with the meta-question on landing, not yet sent', async () => {
     render(
       <SessionProvider>
         <ChatPanel />
       </SessionProvider>
     )
-    expect(await screen.findByDisplayValue('What is X?')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue(META_PROMPT)).toBeInTheDocument()
+    expect(sendChatMessage).not.toHaveBeenCalled()
+    expect(listDocuments).not.toHaveBeenCalledWith('kb_demo')
+  })
+
+  it('sending the meta-question answers client-side with document names and real questions, never calling the real chat API', async () => {
+    listDocuments.mockImplementation((kbId) =>
+      kbId === 'kb_demo'
+        ? Promise.resolve({
+            knowledge_base_id: 'kb_demo',
+            documents: [{ document_id: 'd1', filename: 'handbook.md' }],
+          })
+        : Promise.resolve({ knowledge_base_id: kbId, documents: [] })
+    )
+    render(
+      <SessionProvider>
+        <ChatPanel />
+      </SessionProvider>
+    )
+    await screen.findByDisplayValue(META_PROMPT)
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+
+    expect(await screen.findByText(/handbook\.md/i)).toBeInTheDocument()
+    expect(screen.getByText(/• What is X\?/)).toBeInTheDocument()
     expect(sendChatMessage).not.toHaveBeenCalled()
   })
 
@@ -71,9 +94,10 @@ describe('ChatPanel', () => {
         <ChatPanel />
       </SessionProvider>
     )
-    await screen.findByDisplayValue('What is X?')
+    await screen.findByDisplayValue(META_PROMPT)
     expect(screen.queryByRole('button', { name: /what is x\?/i })).not.toBeInTheDocument()
 
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A real question' } })
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
     await screen.findByText(/answer/i)
 

@@ -164,6 +164,7 @@
 
 .chat-message--assistant .chat-message__content {
   text-align: left;
+  white-space: pre-line;
 }
 
 .chat-message__sources {

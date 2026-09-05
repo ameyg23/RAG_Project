@@ -5,6 +5,41 @@ import { useSession } from '../context/SessionContext'
 
 const COLD_START_DELAY_MS = 5000
 
+// The demo composer is pre-filled with this exact meta-question rather than
+// one of the real curated questions — sending it (unedited) never calls the
+// real chat API at all; it's answered entirely client-side with the actual
+// ingested document names + the real suggested questions, so a first-time
+// visitor gets oriented before spending a real LLM call on content they
+// haven't chosen yet. Editing the box to ask anything else always goes
+// through the real pipeline as normal.
+export const META_PROMPT = 'What can I ask about this knowledge base?'
+
+// Client-side-only response to the meta-question — lists the real ingested
+// document names plus the real curated suggested questions. Never touches
+// sendChatMessage()/the real LLM.
+async function buildMetaResponse(knowledgeBaseId, suggestions) {
+  let documentNames = []
+  try {
+    const result = await listDocuments(knowledgeBaseId)
+    documentNames = (result.documents ?? []).map((doc) => doc.filename)
+  } catch {
+    // Non-fatal — the meta-response still lists the suggested questions
+    // even if the document list itself couldn't be fetched.
+  }
+
+  const lines = []
+  if (documentNames.length > 0) {
+    lines.push(`This knowledge base includes: ${documentNames.join(', ')}.`, '')
+  }
+  if (suggestions.length > 0) {
+    lines.push('You can ask things like:')
+    suggestions.forEach((q) => lines.push(`• ${q}`))
+  } else {
+    lines.push('Try asking a question about the documents listed above.')
+  }
+  return lines.join('\n')
+}
+
 // Server-provided messages are already safe, user-facing text (docs/API.md) —
 // trust them directly. 503 is the disabled-input state (FR-056), not a
 // transient error, so it's never surfaced here as a retryable chat error
@@ -43,26 +78,21 @@ export default function ChatPanel() {
   const userDocumentCount = activeKb?.document_count ?? 0
 
   // Landing on the demo KB with an empty thread pre-fills the composer with
-  // the first curated question (a real, sendable value, not just a
-  // placeholder hint) so a first-time visitor can just hit Send. Only ever
-  // does this once per KB visit — switching away and back re-arms it, but
-  // it never overwrites anything the visitor typed themselves or sent.
+  // META_PROMPT (a real, sendable value, not just a placeholder hint) so a
+  // first-time visitor can just hit Send and get oriented. Only ever does
+  // this once per KB visit — switching away and back re-arms it, but it
+  // never overwrites anything the visitor typed themselves or sent.
   useEffect(() => {
     hasPrefilledRef.current = false
     setInput('')
   }, [activeKnowledgeBaseId])
 
   useEffect(() => {
-    if (
-      isDemo &&
-      !hasPrefilledRef.current &&
-      chatMessages.length === 0 &&
-      suggestedQuestions.length > 0
-    ) {
+    if (isDemo && !hasPrefilledRef.current && chatMessages.length === 0) {
       hasPrefilledRef.current = true
-      setInput(suggestedQuestions[0])
+      setInput(META_PROMPT)
     }
-  }, [isDemo, chatMessages.length, suggestedQuestions])
+  }, [isDemo, chatMessages.length])
 
   // Demo KB is always ready to chat (pre-seeded, FR-002) — the known backend
   // gap that reports document_count: 0 for it is irrelevant here, since
@@ -102,6 +132,16 @@ export default function ChatPanel() {
     setChatMessages((prev) => [...prev, { role: 'user', content: trimmed }])
     setInput('')
     setIsSending(true)
+
+    // The meta-question is answered entirely client-side — never spends a
+    // real LLM call on a question that has no content-based answer.
+    if (isDemo && trimmed === META_PROMPT) {
+      const content = await buildMetaResponse(activeKnowledgeBaseId, suggestedQuestions)
+      setChatMessages((prev) => [...prev, { role: 'assistant', content, sources: [] }])
+      setIsSending(false)
+      return
+    }
+
     setIsColdStart(false)
     coldStartTimerRef.current = setTimeout(() => setIsColdStart(true), COLD_START_DELAY_MS)
 
@@ -225,6 +265,8 @@ export default function ChatPanel() {
           placeholder={placeholder}
           disabled={!isReady || isSending}
           aria-disabled={!isReady || isSending}
+          autoComplete="off"
+          name="chat-message"
         />
         <button type="submit" disabled={!isReady || isSending || !input.trim()}>
           Send
