@@ -96,6 +96,35 @@ def test_threshold_excludes_unrelated_control_question():
     assert results == []
 
 
+def test_threshold_excludes_all_results_from_kb_seeded_with_only_offtopic_content():
+    # docs/TEST_STRATEGY.md §3, worded precisely: seed a KB with ONLY
+    # off-topic content relative to the probe question (distinct from
+    # test_threshold_excludes_unrelated_control_question above, which reuses
+    # the demo KB's genuinely relevant content alongside an unrelated
+    # question) - this proves the 0.35 cutoff excludes weak matches even
+    # when the KB is nonempty, not just when it's empty of everything.
+    offtopic_text = (
+        "Bring an umbrella if it looks like rain; the garden gnomes prefer "
+        "shade to direct sunlight during the hottest part of the afternoon."
+    )
+    (vector,) = embed_texts([offtopic_text])
+    chunk = DocumentChunk(
+        chunk_id="offtopic_0",
+        document_id="offtopic-doc",
+        knowledge_base_id="kb_offtopic",
+        document_name="offtopic.md",
+        chunk_index=0,
+        page=None,
+        text=offtopic_text,
+    )
+    vector_store.upsert_chunks([chunk], [vector])
+
+    (query_vector,) = embed_texts(["How many days of paid time off do I get per year?"])
+    results = retrieve(query_vector, knowledge_base_id="kb_offtopic")
+
+    assert results == []
+
+
 def test_retrieve_requires_knowledge_base_id():
     with pytest.raises(ValueError):
         retrieve([0.0] * 384, knowledge_base_id="")

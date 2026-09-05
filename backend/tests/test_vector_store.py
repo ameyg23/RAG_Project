@@ -217,6 +217,32 @@ def test_with_retry_succeeds_after_transient_failures(monkeypatch):
     assert call_count["n"] == vector_store.MAX_QDRANT_ATTEMPTS
 
 
+def test_is_reachable_true_for_working_client():
+    assert vector_store.is_reachable() is True
+
+
+def test_is_reachable_false_when_client_raises():
+    mock_client = MagicMock()
+    mock_client.collection_exists.side_effect = ConnectionError("simulated outage")
+    vector_store.set_client(mock_client)
+    assert vector_store.is_reachable() is False
+
+
+def test_is_reachable_does_not_retry(monkeypatch):
+    # A liveness check must stay fast even during a real outage - it must
+    # not go through _with_retry's multi-second backoff loop.
+    sleep_calls = {"n": 0}
+    monkeypatch.setattr(vector_store.time, "sleep", lambda _s: sleep_calls.__setitem__("n", 1))
+    mock_client = MagicMock()
+    mock_client.collection_exists.side_effect = ConnectionError("simulated outage")
+    vector_store.set_client(mock_client)
+
+    vector_store.is_reachable()
+
+    assert mock_client.collection_exists.call_count == 1
+    assert sleep_calls["n"] == 0
+
+
 def test_with_retry_raises_after_exhausting_attempts(monkeypatch):
     monkeypatch.setattr(vector_store.time, "sleep", lambda _seconds: None)
     call_count = {"n": 0}

@@ -109,6 +109,7 @@ def test_defaults_and_overrides_passed_through():
     assert kwargs["temperature"] == 0.7
 
 
+@pytest.mark.live_groq
 def test_real_live_call_against_groq():
     # Phase 10's actual Definition of Done: a real prompt built from real
     # demo content produces a real Groq answer. No mocking - this is the
@@ -159,6 +160,7 @@ def test_no_context_short_circuit_never_calls_groq():
     mock_client.chat.completions.create.assert_not_called()
 
 
+@pytest.mark.live_groq
 def test_grounded_answer_real_content_real_groq():
     import retrieval.generation as generation_module
 
@@ -187,6 +189,7 @@ def test_system_prompt_contains_required_instructions():
     assert "reference data" in lower or "not instructions" in lower or "never instructions" in lower
 
 
+@pytest.mark.live_groq
 def test_adversarial_prompt_injection_best_effort():
     # Best-effort check against a real LLM's actual behavior (docs/SECURITY.md
     # explicitly says this is a mitigation, not a guaranteed prevention) - if

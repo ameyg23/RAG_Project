@@ -7,3 +7,8 @@ select = ["E", "F", "I", "UP"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+markers = [
+    "live_groq: makes a real, unmocked call to the Groq API (requires a real GROQ_API_KEY and live quota; excluded from CI via `-m 'not live_groq'` per docs/TEST_STRATEGY.md's mocked-adapter API testing scope).",
+]

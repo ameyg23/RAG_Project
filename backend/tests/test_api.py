@@ -56,6 +56,20 @@ def test_health_happy_path():
     assert body["session_token"]
 
 
+def test_health_degraded_when_vector_store_unreachable():
+    mock_client = MagicMock()
+    mock_client.collection_exists.side_effect = ConnectionError("simulated outage")
+    vector_store.set_client(mock_client)
+
+    resp = client.get("/health")
+
+    assert resp.status_code == 200  # docs/API.md: degraded is signaled in the body, not via status
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert body["vector_store"] == "unreachable"
+    assert body["session_token"]
+
+
 def test_list_knowledge_bases_includes_demo():
     resp = client.get("/knowledge-bases")
     assert resp.status_code == 200
@@ -197,6 +211,7 @@ def test_chat_empty_message_validation_error():
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+@pytest.mark.live_groq
 def test_chat_grounded_answer_real_content_real_groq():
     # Real end-to-end through the actual API: real demo content ingested,
     # a real question, a real (unmocked) Groq call — consistent with how
@@ -310,6 +325,7 @@ def test_upload_request_too_large_returns_413():
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.mark.live_groq
 def test_full_upload_process_ready_chat_delete_lifecycle():
     # Phase 14's actual Definition of Done: the complete real lifecycle,
     # not mocked at any stage. Content is real prose distinct enough that
@@ -416,6 +432,7 @@ def test_delete_removes_chunks_from_qdrant_structurally():
     assert vector_store.count_chunks_for_document(document_id, knowledge_base_id=kb_id) == 0
 
 
+@pytest.mark.live_groq
 def test_kb_isolation_two_real_sessions_similar_content():
     # Phase 15: genuinely adversarial isolation test using the real
     # /documents/upload API (not synthetic DocumentChunk objects like the
@@ -484,3 +501,143 @@ def test_kb_isolation_two_real_sessions_similar_content():
         f"/knowledge-bases/{kb_a}/documents", headers={"X-Session-Token": "iso-session-b"}
     )
     assert forbidden_reverse.status_code == 403
+
+
+def test_list_kb_documents_happy_path():
+    files = [("files", ("listed.txt", b"some real content to list", "text/plain"))]
+    upload_resp = _upload(files, token="list-docs-test")
+    kb_id = upload_resp.json()["knowledge_base_id"]
+    document_id = upload_resp.json()["documents"][0]["document_id"]
+
+    resp = client.get(
+        f"/knowledge-bases/{kb_id}/documents", headers={"X-Session-Token": "list-docs-test"}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["knowledge_base_id"] == kb_id
+    assert len(body["documents"]) == 1
+    doc = body["documents"][0]
+    assert doc["document_id"] == document_id
+    assert doc["filename"] == "listed.txt"
+    assert doc["status"] == "READY"
+    assert doc["chunk_count"] > 0
+
+
+def test_list_kb_documents_unknown_kb_404():
+    resp = client.get("/knowledge-bases/kb_does_not_exist/documents")
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "KNOWLEDGE_BASE_NOT_FOUND"
+
+
+def test_delete_unknown_document_404():
+    resp = client.delete("/documents/nonexistent-id", headers={"X-Session-Token": "any-token"})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "DOCUMENT_NOT_FOUND"
+
+
+def test_chat_forbidden_when_session_does_not_own_kb():
+    files = [("files", ("private.txt", b"only owner-token should see this", "text/plain"))]
+    upload_resp = _upload(files, token="chat-owner-token")
+    kb_id = upload_resp.json()["knowledge_base_id"]
+
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": kb_id, "message": "What does this document say?"},
+        headers={"X-Session-Token": "some-other-token"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN_KNOWLEDGE_BASE"
+
+
+def test_chat_forbidden_when_no_session_token_provided_for_user_kb():
+    files = [("files", ("private2.txt", b"content", "text/plain"))]
+    upload_resp = _upload(files, token="chat-owner-token-2")
+    kb_id = upload_resp.json()["knowledge_base_id"]
+
+    resp = client.post("/chat", json={"knowledge_base_id": kb_id, "message": "anything"})
+
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "FORBIDDEN_KNOWLEDGE_BASE"
+
+
+@pytest.mark.live_groq
+def test_e2e_explore_demo_ask_real_suggested_question():
+    # docs/TEST_STRATEGY.md §4 scenario 1: land on the app (GET /health),
+    # discover the demo KB's real suggested questions, ask one of the exact
+    # published questions, and see a cited answer - the full "explore the
+    # demo" journey, not synthetic pieces of it.
+    generation_module._client = None
+    _ingest_all_demo_content()
+
+    health_resp = client.get("/health")
+    assert health_resp.status_code == 200
+    token = health_resp.json()["session_token"]
+
+    kb_resp = client.get("/knowledge-bases", headers={"X-Session-Token": token})
+    demo_kb = next(
+        kb for kb in kb_resp.json()["knowledge_bases"] if kb["knowledge_base_id"] == "kb_demo"
+    )
+    assert demo_kb["suggested_questions"]
+    question = demo_kb["suggested_questions"][0]
+
+    chat_resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": question},
+        headers={"X-Session-Token": token},
+    )
+
+    assert chat_resp.status_code == 200
+    body = chat_resp.json()
+    assert body["answer"]
+    assert body["answer"] != generation.NO_CONTEXT_RESPONSE
+    assert body["sources"]
+
+
+def test_e2e_recover_from_bad_upload_then_succeed():
+    # docs/TEST_STRATEGY.md §4 scenario 4: a rejected oversized/wrong-type
+    # upload, followed by a valid upload succeeding in the same session.
+    token = "recover-from-bad-upload"
+
+    oversized = _upload(
+        [("files", ("big.bin", b"x" * (5 * 1024 * 1024 + 1), "application/octet-stream"))],
+        token=token,
+    )
+    assert oversized.status_code == 400
+    assert oversized.json()["error"]["code"] == "FILE_TOO_LARGE"
+
+    wrong_type = _upload([("files", ("virus.exe", b"x", "application/octet-stream"))], token=token)
+    assert wrong_type.status_code == 400
+    assert wrong_type.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    valid = _upload(
+        [("files", ("good.txt", b"perfectly valid extractable content", "text/plain"))],
+        token=token,
+    )
+    assert valid.status_code == 202
+    document_id = valid.json()["documents"][0]["document_id"]
+    status_resp = client.get(
+        f"/documents/{document_id}/status", headers={"X-Session-Token": token}
+    )
+    assert status_resp.json()["status"] == "READY"
+
+
+def test_no_server_side_chat_message_store_exists():
+    # FR-023 architectural guarantee: there is no persistent chat-message
+    # store anywhere in this codebase (ADR-12 - store.py is the single
+    # source of truth for all mock persistence). A future accidental
+    # addition of message/history persistence would break this test.
+    import inspect
+
+    import store
+    from api import chat as chat_module
+
+    store_function_names = [name for name in dir(store) if not name.startswith("_")]
+    assert not any("message" in name.lower() for name in store_function_names)
+    assert not any("history" in name.lower() for name in store_function_names)
+
+    chat_source = inspect.getsource(chat_module)
+    assert "save_message" not in chat_source
+    assert "chat_history" not in chat_source
+    assert "message_store" not in chat_source

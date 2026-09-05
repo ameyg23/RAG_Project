@@ -77,6 +77,29 @@ def test_cleaning_is_idempotent():
     assert once == twice
 
 
+def test_cleaning_strips_control_characters_without_altering_meaningful_content():
+    dirty = "Hello\x00world\x0b, this\x0cis\x01a\x02real\x1fsentence."
+    cleaned = _clean_text(dirty)
+    assert "\x00" not in cleaned
+    assert "\x0b" not in cleaned
+    assert "\x0c" not in cleaned
+    assert "\x01" not in cleaned
+    assert "\x02" not in cleaned
+    assert "\x1f" not in cleaned
+    # Every real word survives, just no longer glued together by the
+    # stripped control character.
+    for word in ("Hello", "world", "this", "is", "a", "real", "sentence"):
+        assert word in cleaned
+
+
+def test_cleaning_normalizes_whitespace_without_altering_words():
+    dirty = "This   has\t\tirregular\n\n\nwhitespace   throughout."
+    cleaned = _clean_text(dirty)
+    for word in ("This", "has", "irregular", "whitespace", "throughout."):
+        assert word in cleaned
+    assert "   " not in cleaned
+
+
 def test_unsupported_file_type_raises_value_error():
     with pytest.raises(ValueError):
         extract_and_clean(str(FIXTURES / "sample.txt"), "exe")

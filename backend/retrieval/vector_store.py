@@ -79,6 +79,20 @@ def set_client(client: QdrantClient) -> None:
     _client = client
 
 
+def is_reachable() -> bool:
+    """Single, non-retrying connectivity check for GET /health (docs/API.md).
+
+    Intentionally skips _with_retry: a liveness endpoint must stay fast and
+    report the true current state even during a real outage, not spend up
+    to MAX_QDRANT_ATTEMPTS * QDRANT_RETRY_DELAY_SECONDS blocking on retries.
+    """
+    try:
+        get_client().collection_exists(COLLECTION_NAME)
+        return True
+    except Exception:  # noqa: BLE001 - any failure means "not reachable"
+        return False
+
+
 def ensure_collection() -> None:
     """Idempotently create the shared collection (and its required payload
     indexes) if it doesn't exist yet.
