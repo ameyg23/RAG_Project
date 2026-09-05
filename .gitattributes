@@ -1,0 +1,19 @@
+# Never apply line-ending conversion to binary formats — CRLF conversion
+# would corrupt byte-exact internal structures (e.g. a PDF's xref table,
+# a DOCX's zip central directory). Git's own binary-detection heuristic
+# missed some of these (small reportlab-generated PDFs lack the early NUL
+# bytes it sniffs for), so they're declared explicitly rather than relied
+# on to be auto-detected.
+*.pdf   binary
+*.docx  binary
+*.doc   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.zip   binary
