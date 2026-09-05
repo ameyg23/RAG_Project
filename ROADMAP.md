@@ -266,7 +266,7 @@ sensible top-K set with correctly labeled context.
 
 ---
 
-## Phase 10 [ ] — LLM
+## Phase 10 [x] — LLM
 
 **Objective:** implement Stage 12 of `docs/RAG_PIPELINE.md` (Groq
 integration).
