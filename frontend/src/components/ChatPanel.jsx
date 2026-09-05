@@ -160,19 +160,20 @@ export default function ChatPanel() {
             <p className="chat-message__content">{message.content}</p>
             {message.role === 'assistant' && message.sources?.length > 0 && (
               <ul className="chat-message__sources">
-                {message.sources.map((source, sourceIndex) => (
+                {/* One row per distinct document, name only — a single answer
+                    can cite several chunks from the same file, but the
+                    source list should name each document once, not repeat
+                    it or show its full chunk text. */}
+                {Array.from(
+                  new Map(message.sources.map((source) => [source.document_id, source])).values()
+                ).map((source) => (
                   <li
-                    key={sourceIndex}
+                    key={source.document_id}
                     className={`chat-source${source.is_removed ? ' chat-source--removed' : ''}`}
                   >
                     <span className="chat-source__name">{source.document_name}</span>
-                    {' — '}
-                    <span className="chat-source__locator">{source.locator}</span>
-                    <p className="chat-source__snippet">{source.snippet}</p>
                     {source.is_removed && (
-                      <p className="chat-source__removed-note">
-                        Original document has been removed.
-                      </p>
+                      <span className="chat-source__removed-note"> (document removed)</span>
                     )}
                   </li>
                 ))}

@@ -80,7 +80,7 @@ describe('ChatPanel', () => {
     expect(await screen.findByRole('button', { name: /what is x\?/i })).toBeInTheDocument()
   })
 
-  it('sends a message and renders the answer with its sources', async () => {
+  it('sends a message and renders the answer with just its source document names', async () => {
     sendChatMessage.mockResolvedValue({
       answer: 'The answer is 15.',
       sources: [
@@ -88,7 +88,16 @@ describe('ChatPanel', () => {
           document_id: 'd1',
           document_name: 'doc.md',
           locator: 'chunk 1',
-          snippet: 'snippet text',
+          snippet: 'the entire chunk text should never be rendered in the UI',
+          is_removed: false,
+        },
+        {
+          // A second citation from the same document should still only
+          // render one source row, not a duplicate.
+          document_id: 'd1',
+          document_name: 'doc.md',
+          locator: 'chunk 2',
+          snippet: 'more chunk text that should also never be rendered',
           is_removed: false,
         },
       ],
@@ -103,8 +112,9 @@ describe('ChatPanel', () => {
 
     expect(await screen.findByText('How many?')).toBeInTheDocument()
     expect(await screen.findByText(/the answer is 15/i)).toBeInTheDocument()
-    expect(screen.getByText('doc.md')).toBeInTheDocument()
-    expect(screen.getByText('chunk 1')).toBeInTheDocument()
+    expect(screen.getAllByText('doc.md')).toHaveLength(1)
+    expect(screen.queryByText('chunk 1')).not.toBeInTheDocument()
+    expect(screen.queryByText(/entire chunk text/i)).not.toBeInTheDocument()
   })
 
   it('shows the cold-start message if the response takes longer than 5 seconds', async () => {
