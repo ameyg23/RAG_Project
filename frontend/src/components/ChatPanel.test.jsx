@@ -54,12 +54,29 @@ describe('ChatPanel', () => {
     expect(screen.getByRole('textbox')).not.toBeDisabled()
   })
 
-  it('renders suggested question chips for the demo knowledge base', async () => {
+  it('pre-fills the composer with the first suggested question on landing, not yet sent', async () => {
     render(
       <SessionProvider>
         <ChatPanel />
       </SessionProvider>
     )
+    expect(await screen.findByDisplayValue('What is X?')).toBeInTheDocument()
+    expect(sendChatMessage).not.toHaveBeenCalled()
+  })
+
+  it('shows suggested question chips only after the first message is sent, not before', async () => {
+    sendChatMessage.mockResolvedValue({ answer: 'answer', sources: [] })
+    render(
+      <SessionProvider>
+        <ChatPanel />
+      </SessionProvider>
+    )
+    await screen.findByDisplayValue('What is X?')
+    expect(screen.queryByRole('button', { name: /what is x\?/i })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /send/i }))
+    await screen.findByText(/answer/i)
+
     expect(await screen.findByRole('button', { name: /what is x\?/i })).toBeInTheDocument()
   })
 

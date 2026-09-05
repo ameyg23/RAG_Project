@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, listDocuments, sendChatMessage } from '../api/client'
 import { DEMO_KB_ID } from '../constants'
 import { useSession } from '../context/SessionContext'
@@ -30,11 +30,39 @@ export default function ChatPanel() {
   const [error, setError] = useState(null)
   const [hasReadyUserDocs, setHasReadyUserDocs] = useState(false)
   const coldStartTimerRef = useRef(null)
+  const hasPrefilledRef = useRef(false)
 
   const isDemo = activeKnowledgeBaseId === DEMO_KB_ID
   const activeKb = knowledgeBases.find((kb) => kb.knowledge_base_id === activeKnowledgeBaseId)
-  const suggestedQuestions = isDemo ? (activeKb?.suggested_questions ?? []) : []
+  // Memoized so the effect below (keyed on this array) doesn't see a new []
+  // reference on every render when there's nothing to show yet.
+  const suggestedQuestions = useMemo(
+    () => (isDemo ? (activeKb?.suggested_questions ?? []) : []),
+    [isDemo, activeKb?.suggested_questions]
+  )
   const userDocumentCount = activeKb?.document_count ?? 0
+
+  // Landing on the demo KB with an empty thread pre-fills the composer with
+  // the first curated question (a real, sendable value, not just a
+  // placeholder hint) so a first-time visitor can just hit Send. Only ever
+  // does this once per KB visit — switching away and back re-arms it, but
+  // it never overwrites anything the visitor typed themselves or sent.
+  useEffect(() => {
+    hasPrefilledRef.current = false
+    setInput('')
+  }, [activeKnowledgeBaseId])
+
+  useEffect(() => {
+    if (
+      isDemo &&
+      !hasPrefilledRef.current &&
+      chatMessages.length === 0 &&
+      suggestedQuestions.length > 0
+    ) {
+      hasPrefilledRef.current = true
+      setInput(suggestedQuestions[0])
+    }
+  }, [isDemo, chatMessages.length, suggestedQuestions])
 
   // Demo KB is always ready to chat (pre-seeded, FR-002) — the known backend
   // gap that reports document_count: 0 for it is irrelevant here, since
@@ -114,7 +142,7 @@ export default function ChatPanel() {
         {chatMessages.length === 0 && isReady && (
           <p className="chat-panel__empty">
             {isDemo
-              ? 'Ask a question, or try one of the suggestions below.'
+              ? 'A sample question is ready in the box below — hit Send, or type your own.'
               : 'Ask something about your uploaded documents.'}
           </p>
         )}
@@ -171,8 +199,9 @@ export default function ChatPanel() {
         )}
       </div>
 
-      {isReady && isDemo && suggestedQuestions.length > 0 && chatMessages.length === 0 && (
+      {isReady && isDemo && suggestedQuestions.length > 0 && chatMessages.length > 0 && (
         <div className="chat-panel__suggestions">
+          <p className="chat-panel__suggestions-label">You can also ask:</p>
           {suggestedQuestions.map((question) => (
             <button
               key={question}

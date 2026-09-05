@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, deleteDocument, getDocumentStatus, uploadDocuments } from '../api/client'
+import {
+  ApiError,
+  deleteDocument,
+  getDocumentStatus,
+  listDocuments,
+  uploadDocuments,
+} from '../api/client'
 import { DEMO_KB_ID } from '../constants'
 import { useSession } from '../context/SessionContext'
 
@@ -28,6 +34,27 @@ function validateFiles(files) {
 }
 
 function DemoDocumentsView() {
+  const [documents, setDocuments] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    listDocuments(DEMO_KB_ID)
+      .then((result) => {
+        if (!cancelled) setDocuments(result.documents ?? [])
+      })
+      .catch(() => {
+        // Non-fatal: the panel just shows the generic intro line below
+        // instead of a real document list if this fails.
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   return (
     <div className="documents-panel documents-panel--demo">
       <span className="kb-badge kb-badge--demo">Demo</span>
@@ -35,6 +62,13 @@ function DemoDocumentsView() {
         This knowledge base is pre-loaded with demo content and is always ready to answer
         questions.
       </p>
+      {!isLoading && documents.length > 0 && (
+        <ul className="documents-panel__list documents-panel__list--readonly">
+          {documents.map((doc) => (
+            <li key={doc.document_id}>{doc.filename}</li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
