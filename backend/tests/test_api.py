@@ -12,16 +12,12 @@ from ingestion.embed import embed_texts
 from ingestion.extract import extract_and_clean
 from main import MAX_REQUEST_BODY_BYTES, app
 from retrieval import generation, vector_store
+from store import DEMO_DOCUMENT_FILES
 
 client = TestClient(app)
 
 DEMO_CONTENT = Path(__file__).parent.parent / "demo_content"
-DEMO_FILES = [
-    "01_employee_handbook.md",
-    "02_product_faq.md",
-    "03_onboarding_guide.md",
-    "04_security_policy.md",
-]
+DEMO_FILES = DEMO_DOCUMENT_FILES
 
 
 @pytest.fixture(autouse=True)

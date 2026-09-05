@@ -9,6 +9,18 @@ from datetime import UTC, datetime
 
 DEMO_KB_ID = "kb_demo"
 
+# Single source of truth for which files make up the demo KB - shared by
+# backend/scripts/seed_demo_kb.py (what actually gets ingested) and
+# backend/api/knowledge_bases.py (what the API reports as ingested), so the
+# two can never drift apart. document_id for each is Path(filename).stem
+# (e.g. "01_employee_handbook"), matching seed_demo_kb.py's convention.
+DEMO_DOCUMENT_FILES = [
+    "01_employee_handbook.md",
+    "02_product_faq.md",
+    "03_onboarding_guide.md",
+    "04_security_policy.md",
+]
+
 # session_token -> owned user knowledge_base_id (None until first upload)
 _sessions: dict[str, str | None] = {}
 

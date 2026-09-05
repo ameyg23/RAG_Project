@@ -5,7 +5,9 @@ non-empty knowledge_base_id with no default, since this is the entire
 knowledge-base isolation guarantee (NFR-004).
 """
 
+import time
 import uuid
+from typing import TypeVar
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -24,7 +26,31 @@ from ingestion.chunk import DocumentChunk
 COLLECTION_NAME = "rag_chunks"
 VECTOR_SIZE = 384  # ADR-06: sentence-transformers/all-MiniLM-L6-v2 output dim
 
+# Transient network/DNS blips connecting to Qdrant Cloud have been observed
+# repeatedly during this project's development (always resolving on a quick
+# retry) - this smooths over that class of failure across every
+# Qdrant-touching function in this module, not just document ingestion
+# (ingestion/pipeline.py has its own narrower retry specifically around the
+# upsert step, predating this more general one; the two aren't redundant -
+# this one also covers query/delete/count/collection-setup).
+MAX_QDRANT_ATTEMPTS = 4
+QDRANT_RETRY_DELAY_SECONDS = 1.5
+
+_T = TypeVar("_T")
+
 _client: QdrantClient | None = None
+
+
+def _with_retry(operation) -> "_T":
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_QDRANT_ATTEMPTS + 1):
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001 - broad by design, see comment above
+            last_exc = exc
+            if attempt < MAX_QDRANT_ATTEMPTS:
+                time.sleep(QDRANT_RETRY_DELAY_SECONDS)
+    raise last_exc
 
 
 def get_client() -> QdrantClient:
@@ -67,16 +93,22 @@ def ensure_collection() -> None:
     working, not just being present in the query.
     """
     client = get_client()
-    if not client.collection_exists(COLLECTION_NAME):
-        client.create_collection(
-            COLLECTION_NAME,
-            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+    if not _with_retry(lambda: client.collection_exists(COLLECTION_NAME)):
+        _with_retry(
+            lambda: client.create_collection(
+                COLLECTION_NAME,
+                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+            )
         )
-        client.create_payload_index(
-            COLLECTION_NAME, field_name="knowledge_base_id", field_schema="keyword"
+        _with_retry(
+            lambda: client.create_payload_index(
+                COLLECTION_NAME, field_name="knowledge_base_id", field_schema="keyword"
+            )
         )
-        client.create_payload_index(
-            COLLECTION_NAME, field_name="document_id", field_schema="keyword"
+        _with_retry(
+            lambda: client.create_payload_index(
+                COLLECTION_NAME, field_name="document_id", field_schema="keyword"
+            )
         )
 
 
@@ -115,7 +147,7 @@ def upsert_chunks(chunks: list[DocumentChunk], vectors: list[list[float]]) -> No
         )
         for chunk, vector in zip(chunks, vectors, strict=True)
     ]
-    get_client().upsert(COLLECTION_NAME, points=points)
+    _with_retry(lambda: get_client().upsert(COLLECTION_NAME, points=points))
 
 
 def query(query_vector: list[float], *, knowledge_base_id: str, top_k: int = 5) -> list[dict]:
@@ -123,15 +155,19 @@ def query(query_vector: list[float], *, knowledge_base_id: str, top_k: int = 5) 
         raise ValueError("knowledge_base_id must not be empty (ADR-14, NFR-004)")
 
     ensure_collection()
-    response = get_client().query_points(
-        COLLECTION_NAME,
-        query=query_vector,
-        query_filter=Filter(
-            must=[
-                FieldCondition(key="knowledge_base_id", match=MatchValue(value=knowledge_base_id))
-            ]
-        ),
-        limit=top_k,
+    response = _with_retry(
+        lambda: get_client().query_points(
+            COLLECTION_NAME,
+            query=query_vector,
+            query_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
+                    )
+                ]
+            ),
+            limit=top_k,
+        )
     )
     return [{"score": p.score, **p.payload} for p in response.points]
 
@@ -141,18 +177,20 @@ def delete_document(document_id: str, *, knowledge_base_id: str) -> None:
         raise ValueError("knowledge_base_id must not be empty (ADR-14, NFR-004)")
 
     ensure_collection()
-    get_client().delete(
-        COLLECTION_NAME,
-        points_selector=FilterSelector(
-            filter=Filter(
-                must=[
-                    FieldCondition(key="document_id", match=MatchValue(value=document_id)),
-                    FieldCondition(
-                        key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
-                    ),
-                ]
-            )
-        ),
+    _with_retry(
+        lambda: get_client().delete(
+            COLLECTION_NAME,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[
+                        FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+                        FieldCondition(
+                            key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
+                        ),
+                    ]
+                )
+            ),
+        )
     )
 
 
@@ -161,14 +199,18 @@ def count_chunks_for_document(document_id: str, *, knowledge_base_id: str) -> in
         raise ValueError("knowledge_base_id must not be empty (ADR-14, NFR-004)")
 
     ensure_collection()
-    result = get_client().count(
-        COLLECTION_NAME,
-        count_filter=Filter(
-            must=[
-                FieldCondition(key="document_id", match=MatchValue(value=document_id)),
-                FieldCondition(key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)),
-            ]
-        ),
+    result = _with_retry(
+        lambda: get_client().count(
+            COLLECTION_NAME,
+            count_filter=Filter(
+                must=[
+                    FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+                    FieldCondition(
+                        key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
+                    ),
+                ]
+            ),
+        )
     )
     return result.count
 
@@ -182,12 +224,16 @@ def count_chunks_for_knowledge_base(knowledge_base_id: str) -> int:
         raise ValueError("knowledge_base_id must not be empty (ADR-14, NFR-004)")
 
     ensure_collection()
-    result = get_client().count(
-        COLLECTION_NAME,
-        count_filter=Filter(
-            must=[
-                FieldCondition(key="knowledge_base_id", match=MatchValue(value=knowledge_base_id))
-            ]
-        ),
+    result = _with_retry(
+        lambda: get_client().count(
+            COLLECTION_NAME,
+            count_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
+                    )
+                ]
+            ),
+        )
     )
     return result.count

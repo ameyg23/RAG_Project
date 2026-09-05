@@ -199,3 +199,32 @@ def test_count_chunks_for_knowledge_base_counts_across_documents():
 def test_count_chunks_for_knowledge_base_requires_knowledge_base_id():
     with pytest.raises(ValueError):
         vector_store.count_chunks_for_knowledge_base("")
+
+
+def test_with_retry_succeeds_after_transient_failures(monkeypatch):
+    # Reproduces the exact real-world pattern seen live: a transient
+    # connection blip resolving on retry, not a permanent failure.
+    monkeypatch.setattr(vector_store.time, "sleep", lambda _seconds: None)
+    call_count = {"n": 0}
+
+    def flaky():
+        call_count["n"] += 1
+        if call_count["n"] < vector_store.MAX_QDRANT_ATTEMPTS:
+            raise ConnectionError("simulated transient blip")
+        return "ok"
+
+    assert vector_store._with_retry(flaky) == "ok"
+    assert call_count["n"] == vector_store.MAX_QDRANT_ATTEMPTS
+
+
+def test_with_retry_raises_after_exhausting_attempts(monkeypatch):
+    monkeypatch.setattr(vector_store.time, "sleep", lambda _seconds: None)
+    call_count = {"n": 0}
+
+    def always_fails():
+        call_count["n"] += 1
+        raise ConnectionError("persistent failure")
+
+    with pytest.raises(ConnectionError):
+        vector_store._with_retry(always_fails)
+    assert call_count["n"] == vector_store.MAX_QDRANT_ATTEMPTS
