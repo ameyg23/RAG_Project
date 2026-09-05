@@ -6,10 +6,11 @@ from fastapi.testclient import TestClient
 from qdrant_client import QdrantClient
 
 import retrieval.generation as generation_module
+from api.documents import get_temp_upload_path
 from ingestion.chunk import chunk_document
 from ingestion.embed import embed_texts
 from ingestion.extract import extract_and_clean
-from main import app
+from main import MAX_REQUEST_BODY_BYTES, app
 from retrieval import generation, vector_store
 
 client = TestClient(app)
@@ -201,3 +202,49 @@ def test_chat_llm_failure_maps_to_502():
     body = resp.json()
     assert body["error"]["code"] == "LLM_UNAVAILABLE"
     assert "simulated Groq outage" not in body["error"]["message"]
+
+
+def test_upload_writes_file_to_temp_path_with_server_generated_name():
+    content = b"a real uploaded file's bytes"
+    files = [("files", ("notes.txt", content, "text/plain"))]
+    resp = _upload(files, token="temp-path-test")
+    assert resp.status_code == 202
+    document_id = resp.json()["documents"][0]["document_id"]
+
+    temp_path = get_temp_upload_path(document_id, "txt")
+    try:
+        assert temp_path.exists()
+        assert temp_path.read_bytes() == content
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def test_upload_path_traversal_filename_is_neutralized():
+    content = b"malicious-looking filename, ordinary content"
+    files = [("files", ("../../../etc/evil.txt", content, "text/plain"))]
+    resp = _upload(files, token="traversal-test")
+    assert resp.status_code == 202
+    document_id = resp.json()["documents"][0]["document_id"]
+
+    # The only place this file could legitimately land is the deterministic
+    # server-generated path - never anywhere implied by the raw filename.
+    expected_path = get_temp_upload_path(document_id, "txt")
+    try:
+        assert expected_path.exists()
+        assert expected_path.read_bytes() == content
+        assert expected_path.parent == get_temp_upload_path("x", "txt").parent
+        assert "evil" not in str(expected_path)
+        assert ".." not in expected_path.parts
+    finally:
+        expected_path.unlink(missing_ok=True)
+
+
+def test_upload_request_too_large_returns_413():
+    resp = client.post(
+        "/documents/upload",
+        headers={"Content-Length": str(MAX_REQUEST_BODY_BYTES + 1)},
+        content=b"x",  # body content is irrelevant - rejected on header alone
+    )
+    assert resp.status_code == 413
+    body = resp.json()
+    assert body["error"]["code"] == "REQUEST_TOO_LARGE"

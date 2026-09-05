@@ -335,7 +335,7 @@ correctly cited answer end-to-end.
 
 ---
 
-## Phase 13 [ ] — User Uploads
+## Phase 13 [x] — User Uploads
 
 **Objective:** implement `POST /documents/upload` for real (validation +
 transient file handling per ADR-11).

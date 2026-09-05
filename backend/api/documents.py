@@ -1,3 +1,6 @@
+import tempfile
+from pathlib import Path
+
 from fastapi import APIRouter, File, Header, UploadFile
 
 from errors import ApiError
@@ -24,9 +27,22 @@ MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB, FR-011
 MAX_FILE_COUNT = 5  # FR-010
 SUPPORTED_EXTENSIONS = {"pdf", "docx", "txt", "md"}
 
+# docs/DOCUMENT_PROCESSING.md: temp file paths are always
+# {temp_dir}/{document_id}.{ext} - a pure function of the server-generated
+# document_id and the already-validated extension, NEVER the raw/original
+# filename (docs/SECURITY.md Path Traversal). Phase 14's background
+# pipeline recomputes this same path to read the file back; nothing extra
+# needs to be stored in the mock store.
+UPLOAD_TEMP_DIR = Path(tempfile.gettempdir()) / "rag_chatbot_uploads"
+
 
 def _extension_of(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+
+def get_temp_upload_path(document_id: str, file_type: str) -> Path:
+    UPLOAD_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    return UPLOAD_TEMP_DIR / f"{document_id}.{file_type}"
 
 
 @router.post("/documents/upload", response_model=UploadResponse, status_code=202)
@@ -76,6 +92,10 @@ async def upload_documents(
             size_bytes=len(data),
             status="UPLOADED",
         )
+        # Server-generated path only - document_id and the already-validated
+        # extension, never f.filename (docs/SECURITY.md Path Traversal).
+        temp_path = get_temp_upload_path(doc["document_id"], ext)
+        temp_path.write_bytes(data)
         created.append(
             UploadedDocumentSummary(
                 document_id=doc["document_id"],

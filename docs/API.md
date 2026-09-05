@@ -328,6 +328,7 @@ the authoritative list, kept in sync with `backend/errors.py` usage):
 | `NO_FILES_PROVIDED` | 400 | `POST /documents/upload` |
 | `TOO_MANY_FILES` | 400 | `POST /documents/upload` |
 | `FILE_TOO_LARGE` | 400 | `POST /documents/upload` |
+| `REQUEST_TOO_LARGE` | 413 | Any endpoint — global `Content-Length`-based defense-in-depth (`docs/SECURITY.md` Excessive File Size), rejected before the body is read |
 | `UNSUPPORTED_FILE_TYPE` | 400 | `POST /documents/upload` |
 | `VALIDATION_ERROR` | 400 | Any endpoint — generic Pydantic request-shape validation failure (e.g. empty/oversized `POST /chat` message) |
 | `FORBIDDEN_KNOWLEDGE_BASE` | 403 | `GET /knowledge-bases/{id}/documents`, `GET /documents/{id}/status`, `DELETE /documents/{id}`, `POST /chat` — session does not own the requested `kb_user_*`, or (delete only) the target is `kb_demo` |

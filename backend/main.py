@@ -16,6 +16,44 @@ logger = logging.getLogger("backend")
 
 app = FastAPI(title="RAG Chatbot Backend")
 
+# Defense-in-depth beyond the per-file 5MB check (docs/API.md, docs/SECURITY.md
+# Excessive File Size): rejects an oversized request based on the
+# Content-Length header alone, before the body is ever read into memory.
+# 30MB covers 5 files x 5MB plus multipart boundary/header overhead.
+MAX_REQUEST_BODY_BYTES = 30 * 1024 * 1024
+
+
+class MaxBodySizeMiddleware:
+    def __init__(self, app, max_bytes: int):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers") or [])
+            content_length = headers.get(b"content-length")
+            if content_length is not None:
+                try:
+                    length = int(content_length)
+                except ValueError:
+                    length = 0
+                if length > self.max_bytes:
+                    response = JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": {
+                                "code": "REQUEST_TOO_LARGE",
+                                "message": "The request body is too large.",
+                            }
+                        },
+                    )
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(MaxBodySizeMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.CORS_ALLOWED_ORIGIN],
