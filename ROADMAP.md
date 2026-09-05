@@ -382,7 +382,7 @@ works against the real deployed stack (or local dev equivalent).
 
 ---
 
-## Phase 15 [ ] — Knowledge-Base Separation
+## Phase 15 [x] — Knowledge-Base Separation
 
 **Objective:** verify and harden isolation (NFR-004) end-to-end now that
 both demo and user KBs are real.
@@ -401,6 +401,25 @@ real data, not mocks.
 **Definition of done:** two independent browser sessions each upload
 different documents and confirm neither can retrieve the other's content,
 and both can independently query the shared demo KB.
+
+**Status note — real demo KB is live, one known gap carried to Phase 16:**
+`backend/scripts/seed_demo_kb.py` was run for real against the live Qdrant
+Cloud cluster (23 chunks across the 4 demo files, verified idempotent on
+re-run) and a live chat smoke test confirms `kb_demo` is genuinely
+queryable end-to-end. **Known gap:** `GET /knowledge-bases` and
+`GET /knowledge-bases/{id}/documents` derive `kb_demo`'s document list/
+count from the in-process mock store (`store.list_documents_for_kb`),
+which the offline seed script correctly never touches (ADR-12 — the mock
+store is per-process memory, invisible to a separate script's writes to
+Qdrant). Chat itself is unaffected (its readiness check queries Qdrant
+directly, fixed in Phase 12), but those two endpoints will keep reporting
+`document_count: 0` for `kb_demo` until this is deliberately addressed —
+most likely when Phase 16 builds the actual Demo Knowledge-Base View,
+since `docs/UI_UX.md` only requires document *names* there, which narrows
+the real fix needed (e.g. reading `backend/demo_content/` from disk, or
+denormalizing minimal metadata onto chunk payloads) once that UI's exact
+requirements are concrete. See `backend/scripts/seed_demo_kb.py`'s
+module docstring for the full explanation.
 
 ---
 

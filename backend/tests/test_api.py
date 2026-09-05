@@ -376,3 +376,73 @@ def test_delete_removes_chunks_from_qdrant_structurally():
     client.delete(f"/documents/{document_id}", headers={"X-Session-Token": token})
 
     assert vector_store.count_chunks_for_document(document_id, knowledge_base_id=kb_id) == 0
+
+
+def test_kb_isolation_two_real_sessions_similar_content():
+    # Phase 15: genuinely adversarial isolation test using the real
+    # /documents/upload API (not synthetic DocumentChunk objects like the
+    # existing vector_store/retriever isolation tests). Both sessions'
+    # files share the same subject (vacation policy) with different
+    # specific numbers - a broken filter could still "work" against
+    # unrelated content, so this proves the filter itself does the work.
+    content_a = (
+        b"Vacation Policy: Acme employees accrue 15 days of paid time off per year, "
+        b"credited monthly."
+    )
+    content_b = (
+        b"Vacation Policy: Zenith employees accrue 22 days of paid time off per year, "
+        b"credited monthly."
+    )
+
+    resp_a = _upload([("files", ("policy.txt", content_a, "text/plain"))], token="iso-session-a")
+    resp_b = _upload([("files", ("policy.txt", content_b, "text/plain"))], token="iso-session-b")
+    kb_a = resp_a.json()["knowledge_base_id"]
+    kb_b = resp_b.json()["knowledge_base_id"]
+    assert kb_a != kb_b
+
+    question = "How many vacation days do employees accrue per year?"
+
+    chat_a = client.post(
+        "/chat",
+        json={"knowledge_base_id": kb_a, "message": question},
+        headers={"X-Session-Token": "iso-session-a"},
+    )
+    assert chat_a.status_code == 200
+    assert "15" in chat_a.json()["answer"]
+    assert "22" not in chat_a.json()["answer"]
+
+    chat_b = client.post(
+        "/chat",
+        json={"knowledge_base_id": kb_b, "message": question},
+        headers={"X-Session-Token": "iso-session-b"},
+    )
+    assert chat_b.status_code == 200
+    assert "22" in chat_b.json()["answer"]
+    assert "15" not in chat_b.json()["answer"]
+
+    # Each session can still independently chat against the shared demo KB.
+    _ingest_all_demo_content()
+    demo_question = "Does Acme require two-factor authentication?"
+    demo_chat_a = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": demo_question},
+        headers={"X-Session-Token": "iso-session-a"},
+    )
+    demo_chat_b = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": demo_question},
+        headers={"X-Session-Token": "iso-session-b"},
+    )
+    assert demo_chat_a.status_code == 200
+    assert "2FA" in demo_chat_a.json()["answer"] or "two-factor" in demo_chat_a.json()["answer"]
+    assert demo_chat_b.status_code == 200
+
+    # Session A cannot see session B's documents (or vice versa).
+    forbidden = client.get(
+        f"/knowledge-bases/{kb_b}/documents", headers={"X-Session-Token": "iso-session-a"}
+    )
+    assert forbidden.status_code == 403
+    forbidden_reverse = client.get(
+        f"/knowledge-bases/{kb_a}/documents", headers={"X-Session-Token": "iso-session-b"}
+    )
+    assert forbidden_reverse.status_code == 403
