@@ -1,17 +1,16 @@
 """Stage 11-12 of docs/RAG_PIPELINE.md: system prompt + the raw Groq
-chat-completion call.
-
-Scope boundary: parsing citation markers out of the model's answer and
-building the structured sources[] array is Phase 12's job (Stage 14), not
-this one - answer_question() only returns the raw answer string plus the
-ChunkContext Phase 12 needs.
+chat-completion call. Stage 14: source attribution.
 """
+
+import re
 
 from groq import Groq
 
 from config import settings
 from retrieval import retriever
 from retrieval.retriever import ChunkContext
+
+CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 
 TEMPERATURE = 0.1
 
@@ -115,3 +114,36 @@ def answer_question(
     ]
     answer = generate(messages)
     return answer, chunk_context
+
+
+def build_sources(answer: str, chunk_context: ChunkContext) -> list[dict]:
+    """Stage 14: resolve [N] markers in the answer to chunk metadata.
+
+    Never fabricates a citation absent from citation_map (FR-041) — a
+    marker number outside the map is simply ignored, not invented. If the
+    model omitted markers entirely (or every marker it used was bogus),
+    falls back to attributing every chunk that was actually in context,
+    per docs/RAG_PIPELINE.md Stage 14's documented safe fallback.
+    """
+    if not chunk_context.citation_map:
+        return []
+
+    cited_numbers = sorted(
+        {int(n) for n in CITATION_PATTERN.findall(answer)} & set(chunk_context.citation_map)
+    )
+    numbers = cited_numbers if cited_numbers else sorted(chunk_context.citation_map)
+
+    sources = []
+    for n in numbers:
+        chunk = chunk_context.citation_map[n]
+        locator = f"page {chunk.page}" if chunk.page is not None else f"chunk {chunk.chunk_index}"
+        sources.append(
+            {
+                "document_id": chunk.document_id,
+                "document_name": chunk.document_name,
+                "locator": locator,
+                "snippet": chunk.text,
+                "is_removed": False,
+            }
+        )
+    return sources

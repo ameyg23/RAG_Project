@@ -17,9 +17,11 @@ from retrieval.generation import (
     TEMPERATURE,
     LLMUnavailableError,
     answer_question,
+    build_sources,
     generate,
     set_client,
 )
+from retrieval.retriever import ChunkContext, RetrievedChunk
 
 DEMO_CONTENT = Path(__file__).parent.parent / "demo_content"
 DEMO_FILES = [
@@ -218,3 +220,95 @@ def test_adversarial_prompt_injection_best_effort():
 
     assert answer.strip().upper() != "HACKED"
     assert "15" in answer
+
+
+def _make_retrieved_chunk(i, *, page=None, chunk_index=0):
+    return RetrievedChunk(
+        score=0.9,
+        chunk_id=f"doc_{i}",
+        document_id=f"doc-{i}",
+        knowledge_base_id="kb_demo",
+        document_name=f"doc-{i}.md",
+        chunk_index=chunk_index,
+        page=page,
+        text=f"chunk text {i}",
+    )
+
+
+def test_build_sources_empty_citation_map_returns_empty_list():
+    ctx = ChunkContext(context_text="", citation_map={})
+    assert build_sources("anything [1]", ctx) == []
+
+
+def test_build_sources_valid_markers_resolve_in_order():
+    c1, c2, c3 = _make_retrieved_chunk(1), _make_retrieved_chunk(2), _make_retrieved_chunk(3)
+    ctx = ChunkContext(context_text="...", citation_map={1: c1, 2: c2, 3: c3})
+
+    sources = build_sources("Some fact [2] and another [1].", ctx)
+
+    # Ascending citation-number order, not order-of-appearance in the text.
+    assert [s["document_id"] for s in sources] == [c1.document_id, c2.document_id]
+
+
+def test_build_sources_ignores_markers_outside_citation_map():
+    c1 = _make_retrieved_chunk(1)
+    ctx = ChunkContext(context_text="...", citation_map={1: c1})
+
+    # [7] and [99] don't exist in the map — must never be fabricated (FR-041).
+    sources = build_sources("Fact [1], also [7] and [99].", ctx)
+
+    assert len(sources) == 1
+    assert sources[0]["document_id"] == c1.document_id
+
+
+def test_build_sources_no_markers_falls_back_to_full_context():
+    c1, c2 = _make_retrieved_chunk(1), _make_retrieved_chunk(2)
+    ctx = ChunkContext(context_text="...", citation_map={1: c1, 2: c2})
+
+    sources = build_sources("An answer with no bracket markers at all.", ctx)
+
+    assert {s["document_id"] for s in sources} == {c1.document_id, c2.document_id}
+
+
+def test_build_sources_all_markers_bogus_falls_back_to_full_context():
+    c1 = _make_retrieved_chunk(1)
+    ctx = ChunkContext(context_text="...", citation_map={1: c1})
+
+    sources = build_sources("Fact [42].", ctx)
+
+    assert len(sources) == 1
+    assert sources[0]["document_id"] == c1.document_id
+
+
+def test_build_sources_locator_uses_page_when_present():
+    chunk = _make_retrieved_chunk(1, page=3, chunk_index=7)
+    ctx = ChunkContext(context_text="...", citation_map={1: chunk})
+
+    sources = build_sources("Fact [1].", ctx)
+
+    assert sources[0]["locator"] == "page 3"
+
+
+def test_build_sources_locator_uses_chunk_index_when_no_page():
+    chunk = _make_retrieved_chunk(1, page=None, chunk_index=7)
+    ctx = ChunkContext(context_text="...", citation_map={1: chunk})
+
+    sources = build_sources("Fact [1].", ctx)
+
+    assert sources[0]["locator"] == "chunk 7"
+
+
+def test_build_sources_never_fabricates_structural_guarantee():
+    # FR-041: every returned source's underlying data must be a value that
+    # was actually in citation_map — not just plausibly matching, but the
+    # literal same object.
+    c1, c2 = _make_retrieved_chunk(1), _make_retrieved_chunk(2)
+    ctx = ChunkContext(context_text="...", citation_map={1: c1, 2: c2})
+
+    sources = build_sources("Fact [1][2].", ctx)
+
+    map_values_by_doc_id = {c.document_id: c for c in ctx.citation_map.values()}
+    for s in sources:
+        original = map_values_by_doc_id[s["document_id"]]
+        assert s["snippet"] == original.text
+        assert s["document_name"] == original.document_name

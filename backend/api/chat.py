@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Header
 
 from errors import ApiError
-from models.schemas import ChatRequest, ChatResponse
-from store import DEMO_KB_ID, known_kb_id, list_documents_for_kb, session_owns_kb
+from ingestion.embed import embed_texts
+from models.schemas import ChatRequest, ChatResponse, SourceReference
+from retrieval import generation, vector_store
+from store import DEMO_KB_ID, known_kb_id, session_owns_kb
 
 router = APIRouter()
 
@@ -20,13 +22,27 @@ def chat(request: ChatRequest, x_session_token: str | None = Header(default=None
                 403, "FORBIDDEN_KNOWLEDGE_BASE", "You do not have access to this knowledge base."
             )
 
-    # Real retrieval + generation is Phases 5-12 (docs/RAG_PIPELINE.md); no
-    # ingestion pipeline exists yet, so no document can ever be READY —
-    # this always raises 503 in Phase 3, which is honest stub behavior.
-    ready_docs = [d for d in list_documents_for_kb(kb_id) if d["status"] == "READY"]
-    if not ready_docs:
+    # Readiness is decided by Qdrant, not the mock store: once a document is
+    # READY its existence is represented entirely by its chunks
+    # (docs/DATA_MODEL.md) — the mock store only ever tracks the transient
+    # UPLOADED/PROCESSING/FAILED states.
+    if vector_store.count_chunks_for_knowledge_base(kb_id) == 0:
         raise ApiError(
             503, "EMPTY_KNOWLEDGE_BASE", "This knowledge base has no ready documents yet."
         )
 
-    raise NotImplementedError("Unreachable in Phase 3 — no document can be READY yet.")
+    (query_vector,) = embed_texts([request.message])
+
+    try:
+        answer, chunk_context = generation.answer_question(
+            query_vector, request.message, knowledge_base_id=kb_id
+        )
+    except generation.LLMUnavailableError:
+        raise ApiError(
+            502,
+            "LLM_UNAVAILABLE",
+            "The answer service is temporarily unavailable. Please try again shortly.",
+        ) from None
+
+    sources = generation.build_sources(answer, chunk_context)
+    return ChatResponse(answer=answer, sources=[SourceReference(**s) for s in sources])

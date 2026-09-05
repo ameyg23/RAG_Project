@@ -313,7 +313,7 @@ returns the fixed no-context response without ever calling Groq.
 
 ---
 
-## Phase 12 [ ] — Source Citations
+## Phase 12 [x] — Source Citations
 
 **Objective:** implement Stage 14 of `docs/RAG_PIPELINE.md` (source
 attribution) and wire `POST /chat`'s real response.

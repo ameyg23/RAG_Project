@@ -1,8 +1,49 @@
-from fastapi.testclient import TestClient
+from pathlib import Path
+from unittest.mock import MagicMock
 
+import pytest
+from fastapi.testclient import TestClient
+from qdrant_client import QdrantClient
+
+import retrieval.generation as generation_module
+from ingestion.chunk import chunk_document
+from ingestion.embed import embed_texts
+from ingestion.extract import extract_and_clean
 from main import app
+from retrieval import generation, vector_store
 
 client = TestClient(app)
+
+DEMO_CONTENT = Path(__file__).parent.parent / "demo_content"
+DEMO_FILES = [
+    "01_employee_handbook.md",
+    "02_product_faq.md",
+    "03_onboarding_guide.md",
+    "04_security_policy.md",
+]
+
+
+@pytest.fixture(autouse=True)
+def fresh_in_memory_qdrant():
+    """Every test gets its own isolated in-memory Qdrant instance — without
+    this, vector_store.get_client() falls back to the real Qdrant Cloud
+    cluster now that QDRANT_URL is configured, which is slow and
+    non-hermetic for tests that don't need it."""
+    vector_store.set_client(QdrantClient(":memory:"))
+    yield
+
+
+def _ingest_all_demo_content(knowledge_base_id="kb_demo"):
+    for i, filename in enumerate(DEMO_FILES):
+        units = extract_and_clean(str(DEMO_CONTENT / filename), "md")
+        chunks = chunk_document(
+            units,
+            document_id=f"doc-{i}",
+            knowledge_base_id=knowledge_base_id,
+            document_name=filename,
+        )
+        vectors = embed_texts([c.text for c in chunks])
+        vector_store.upsert_chunks(chunks, vectors)
 
 
 def _upload(files, token=None):
@@ -109,3 +150,54 @@ def test_chat_empty_message_validation_error():
     resp = client.post("/chat", json={"knowledge_base_id": "kb_demo", "message": "   "})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_chat_grounded_answer_real_content_real_groq():
+    # Real end-to-end through the actual API: real demo content ingested,
+    # a real question, a real (unmocked) Groq call — consistent with how
+    # Phases 10-11 validated real behavior, not just mocks.
+    generation_module._client = None  # force a fresh real Groq client
+    _ingest_all_demo_content()
+
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": "How many vacation days do I get?"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "15" in body["answer"]
+    assert body["sources"]
+    assert any(s["document_name"] == "01_employee_handbook.md" for s in body["sources"])
+    assert all(s["is_removed"] is False for s in body["sources"])
+
+
+def test_chat_no_context_question_real_api():
+    _ingest_all_demo_content()
+
+    resp = client.post(
+        "/chat", json={"knowledge_base_id": "kb_demo", "message": "What is the capital of France?"}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["answer"] == generation.NO_CONTEXT_RESPONSE
+    assert body["sources"] == []
+
+
+def test_chat_llm_failure_maps_to_502():
+    _ingest_all_demo_content()
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = RuntimeError("simulated Groq outage")
+    generation.set_client(mock_client)
+
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": "How many vacation days do I get?"},
+    )
+
+    assert resp.status_code == 502
+    body = resp.json()
+    assert body["error"]["code"] == "LLM_UNAVAILABLE"
+    assert "simulated Groq outage" not in body["error"]["message"]

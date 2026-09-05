@@ -128,9 +128,7 @@ def query(query_vector: list[float], *, knowledge_base_id: str, top_k: int = 5) 
         query=query_vector,
         query_filter=Filter(
             must=[
-                FieldCondition(
-                    key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
-                )
+                FieldCondition(key="knowledge_base_id", match=MatchValue(value=knowledge_base_id))
             ]
         ),
         limit=top_k,
@@ -169,6 +167,26 @@ def count_chunks_for_document(document_id: str, *, knowledge_base_id: str) -> in
             must=[
                 FieldCondition(key="document_id", match=MatchValue(value=document_id)),
                 FieldCondition(key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)),
+            ]
+        ),
+    )
+    return result.count
+
+
+def count_chunks_for_knowledge_base(knowledge_base_id: str) -> int:
+    """Whether this KB has any ready content at all (no document_id filter) —
+    the real source of truth for chat.py's 503 EMPTY_KNOWLEDGE_BASE check,
+    since a document's READY-ness is represented entirely by its chunks
+    existing here, not by any mock-store flag (docs/DATA_MODEL.md)."""
+    if not knowledge_base_id:
+        raise ValueError("knowledge_base_id must not be empty (ADR-14, NFR-004)")
+
+    ensure_collection()
+    result = get_client().count(
+        COLLECTION_NAME,
+        count_filter=Filter(
+            must=[
+                FieldCondition(key="knowledge_base_id", match=MatchValue(value=knowledge_base_id))
             ]
         ),
     )

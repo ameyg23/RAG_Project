@@ -177,3 +177,25 @@ def test_upsert_requires_knowledge_base_id_on_every_chunk():
 def test_delete_requires_knowledge_base_id():
     with pytest.raises(ValueError):
         vector_store.delete_document("doc-1", knowledge_base_id="")
+
+
+def test_count_chunks_for_knowledge_base_zero_when_empty():
+    assert vector_store.count_chunks_for_knowledge_base("kb_nothing_here") == 0
+
+
+def test_count_chunks_for_knowledge_base_counts_across_documents():
+    chunks_1, vectors_1 = _chunks_and_vectors(
+        "01_employee_handbook.md", document_id="doc-h", knowledge_base_id="kb_demo"
+    )
+    chunks_2, vectors_2 = _chunks_and_vectors(
+        "02_product_faq.md", document_id="doc-faq", knowledge_base_id="kb_demo"
+    )
+    vector_store.upsert_chunks(chunks_1, vectors_1)
+    vector_store.upsert_chunks(chunks_2, vectors_2)
+
+    assert vector_store.count_chunks_for_knowledge_base("kb_demo") == len(chunks_1) + len(chunks_2)
+
+
+def test_count_chunks_for_knowledge_base_requires_knowledge_base_id():
+    with pytest.raises(ValueError):
+        vector_store.count_chunks_for_knowledge_base("")
