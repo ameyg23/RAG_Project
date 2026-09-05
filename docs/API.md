@@ -66,13 +66,18 @@ included.
       "knowledge_base_id": "kb_demo",
       "kind": "demo",
       "name": "Demo: Company Handbook",
-      "document_count": 4
+      "document_count": 4,
+      "suggested_questions": [
+        "How many days of PTO do full-time employees accrue per year?",
+        "What pricing tiers does Beacon offer?"
+      ]
     },
     {
       "knowledge_base_id": "kb_user_9c2a...",
       "kind": "user",
       "name": "Your documents",
-      "document_count": 2
+      "document_count": 2,
+      "suggested_questions": []
     }
   ]
 }

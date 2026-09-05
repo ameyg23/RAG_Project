@@ -1,3 +1,7 @@
+import json
+from functools import lru_cache
+from pathlib import Path
+
 from fastapi import APIRouter, Header
 
 from errors import ApiError
@@ -12,6 +16,21 @@ from store import DEMO_KB_ID, derive_user_kb_id, known_kb_id, list_documents_for
 
 router = APIRouter()
 
+SUGGESTED_QUESTIONS_PATH = (
+    Path(__file__).parent.parent / "demo_content" / "suggested_questions.json"
+)
+
+
+@lru_cache(maxsize=1)
+def _demo_suggested_questions() -> list[str]:
+    """FR-003: 3-5 curated questions, single source of truth in
+    backend/demo_content/suggested_questions.json - only the question text
+    is exposed via the API, not the internal source_document/
+    expected_answer_summary/verified_answerable fields used at authoring
+    time (docs/PLANNING_REVIEW.md / Phase 4)."""
+    data = json.loads(SUGGESTED_QUESTIONS_PATH.read_text(encoding="utf-8"))
+    return [item["question"] for item in data]
+
 
 @router.get("/knowledge-bases", response_model=KnowledgeBasesResponse)
 def list_knowledge_bases(x_session_token: str | None = Header(default=None)):
@@ -20,6 +39,7 @@ def list_knowledge_bases(x_session_token: str | None = Header(default=None)):
         kind="demo",
         name="Demo: Sample Knowledge Base",
         document_count=len(list_documents_for_kb(DEMO_KB_ID)),
+        suggested_questions=_demo_suggested_questions(),
     )
     kbs = [demo]
 

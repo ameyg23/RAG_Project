@@ -25,6 +25,10 @@ class KnowledgeBaseSummary(BaseModel):
     kind: Literal["demo", "user"]
     name: str
     document_count: int
+    # Populated only for the demo KB, from backend/demo_content/suggested_questions.json
+    # (FR-003) - empty for user KBs, since their content is arbitrary. Single
+    # source of truth: the frontend never hardcodes a duplicate copy of these.
+    suggested_questions: list[str] = []
 
 
 class KnowledgeBasesResponse(BaseModel):

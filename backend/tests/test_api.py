@@ -67,6 +67,26 @@ def test_list_knowledge_bases_includes_demo():
     assert "kb_demo" in ids
 
 
+def test_demo_kb_suggested_questions_match_source_file():
+    import json
+    from pathlib import Path
+
+    expected = json.loads(
+        (Path(__file__).parent.parent / "demo_content" / "suggested_questions.json").read_text()
+    )
+    resp = client.get("/knowledge-bases")
+    demo = next(kb for kb in resp.json()["knowledge_bases"] if kb["knowledge_base_id"] == "kb_demo")
+    assert demo["suggested_questions"] == [q["question"] for q in expected]
+
+
+def test_user_kb_has_no_suggested_questions():
+    files = [("files", ("s.txt", b"content", "text/plain"))]
+    _upload(files, token="suggested-q-test")
+    resp = client.get("/knowledge-bases", headers={"X-Session-Token": "suggested-q-test"})
+    user_kb = next(kb for kb in resp.json()["knowledge_bases"] if kb["kind"] == "user")
+    assert user_kb["suggested_questions"] == []
+
+
 def test_upload_happy_path():
     files = [
         ("files", ("a.txt", b"hello world", "text/plain")),
