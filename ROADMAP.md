@@ -139,7 +139,7 @@ questions list finalized and matches actual document content.
 
 ---
 
-## Phase 5 [ ] — Document Ingestion
+## Phase 5 [x] — Document Ingestion
 
 **Objective:** implement Stage 1–2 of `docs/RAG_PIPELINE.md` (extraction,
 cleaning) for all four supported formats.
