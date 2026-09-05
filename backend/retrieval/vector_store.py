@@ -54,12 +54,29 @@ def set_client(client: QdrantClient) -> None:
 
 
 def ensure_collection() -> None:
-    """Idempotently create the shared collection if it doesn't exist yet."""
+    """Idempotently create the shared collection (and its required payload
+    indexes) if it doesn't exist yet.
+
+    A real Qdrant Cloud server (unlike the in-memory local mode used in
+    tests) refuses to filter on a payload field with no index at all,
+    raising a 400 "Index required but not found" error — this was only
+    discovered by verifying against a real live cluster. Every field this
+    module filters by (knowledge_base_id, document_id) needs a keyword
+    payload index, since the entire knowledge-base isolation guarantee
+    (NFR-004, ADR-14) depends on the knowledge_base_id filter actually
+    working, not just being present in the query.
+    """
     client = get_client()
     if not client.collection_exists(COLLECTION_NAME):
         client.create_collection(
             COLLECTION_NAME,
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+        )
+        client.create_payload_index(
+            COLLECTION_NAME, field_name="knowledge_base_id", field_schema="keyword"
+        )
+        client.create_payload_index(
+            COLLECTION_NAME, field_name="document_id", field_schema="keyword"
         )
 
 

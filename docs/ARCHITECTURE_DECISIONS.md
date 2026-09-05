@@ -204,7 +204,19 @@ inactivity and are deleted after 28 days** — a real risk for a low-traffic
 portfolio demo. Mitigated by: (a) keeping the demo KB re-ingestible from a
 committed script (docs/DOCUMENT_PROCESSING.md), so a suspended cluster is a
 one-command recovery, not data loss of anything irreplaceable, and (b)
-documenting this explicitly so it is never mistaken for a bug.
+documenting this explicitly so it is never mistaken for a bug. Also: a real
+Qdrant Cloud server enforces a requirement that `qdrant-client`'s embedded
+in-memory mode (used for this project's automated tests) does not —
+filtering on a payload field with no index raises a 400 error server-side,
+even though the identical code runs silently against in-memory Qdrant. This
+was only caught by actually verifying against a live cluster (Phase 8/9's
+work was initially marked done using in-memory tests only); `vector_store.py`
+now creates keyword payload indexes on `knowledge_base_id` and `document_id`
+at collection-creation time to fix this. **Lesson generalized:** in-memory/
+embedded mode is a good, cheap substitute for CI test speed, but it is not
+a perfect stand-in for the real server's behavior — anything genuinely
+"done" against Qdrant should still get one live-cluster smoke test before
+being trusted, which is exactly what surfaced this.
 
 **Free-tier implications:** $0 as long as usage stays within 1GB RAM / 4GB
 disk, which this project's expected scale (a handful of small KBs) will not
@@ -216,13 +228,13 @@ by `knowledge_base_id`) is provider-agnostic in code.
 
 ---
 
-## ADR-08: LLM Provider — Groq (Llama 3.3 70B Versatile)
+## ADR-08: LLM Provider — Groq (`qwen/qwen3.8-27b`)
 
 **Options considered:** OpenAI (paid), Anthropic (paid), Google Gemini (free
 tier, low daily request quota), Groq (free tier, no card required).
 
-**Selected:** Groq, `llama-3.3-70b-versatile`, as the primary answer-
-generation model.
+**Selected:** Groq, `qwen/qwen3.8-27b`, as the primary answer-generation
+model.
 
 **Reason:** Groq's free tier requires no credit card, and its per-minute
 limits (30 RPM) suit an interactive chat demo better than Gemini's stricter
@@ -231,21 +243,47 @@ of the free-tier research done for this plan — see `docs/DEPLOYMENT.md`).
 Groq's inference is also unusually fast, which matters given Render's
 free-tier cold starts already add latency.
 
+**Model note (updated after live verification):** this ADR originally
+selected `llama-3.3-70b-versatile`, planned at design time. By the time
+Phase 10 verified against Groq's real API (with actual credentials), that
+model had been removed from Groq's catalog entirely — free-tier model
+lineups on a fast-moving inference provider are not a stable target to
+plan far in advance, so this was expected to need a real check at
+implementation time, not a planning-time guess. Two live candidates were
+compared directly against a real grounded-QA prompt using this project's
+own demo content: `openai/gpt-oss-120b`/`-20b` turned out to be *reasoning*
+models that spend a large, variable share of `max_tokens` on hidden
+chain-of-thought before any visible answer appears (measured: 52 of 62
+completion tokens on a trivial 1-word reply) — this materially changes
+token-budget and latency assumptions and would need explicit handling.
+`qwen/qwen3.8-27b` behaved as a plain instruction model — no hidden
+reasoning tokens, correct grounded/cited output on the first try, fast
+(69ms end-to-end in the live test). It was chosen for being the simpler,
+more predictable fit for this project's extractive-answer design, not
+because reasoning models are bad in general.
+
 **Advantages:** No credit card to unlock; fast inference (low added
-latency); 70B-parameter model quality is adequate for grounded, extractive-
-style RAG answers over short retrieved contexts.
+latency); direct (non-reasoning) output keeps prompt/response handling
+simple and matches the extractive, low-temperature answer style this
+project wants; 27B-parameter model quality is adequate for grounded,
+extractive-style RAG answers over short retrieved contexts.
 
 **Disadvantages:** Daily/organization-level request cap (documented in
 `docs/DEPLOYMENT.md`) can be exhausted under sustained demo traffic; smaller
 context window discipline is required (see `docs/RAG_PIPELINE.md` context
-limits) to fit within Groq's tokens-per-minute cap.
+limits) to fit within Groq's tokens-per-minute cap; Groq's free-tier model
+catalog can and does change without notice (this ADR itself is evidence),
+so the configured model name must be re-verified against
+`client.models.list()` before any future deployment, not assumed stable.
 
 **Free-tier implications:** $0, no card. Rate-limit exhaustion produces a
 user-visible "try again shortly" error (FR-054) rather than a bill.
 
 **Future migration:** LLM calls are isolated behind a single
-`generate_answer()` function; swapping to Gemini or a paid provider changes
-one adapter and one environment variable.
+`generate_answer()` function; swapping to Gemini, a paid provider, or a
+different Groq model changes one adapter and one environment variable
+(`LLM_MODEL_NAME`, `docs/ENVIRONMENT.md`) — this ADR's own history is the
+proof that this isolation was worth having.
 
 ---
 

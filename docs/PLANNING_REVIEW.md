@@ -3,6 +3,16 @@
 Final planning-phase deliverable. Confirms every prior deliverable exists,
 satisfies its acceptance criteria, and agrees with every other deliverable.
 
+> **Post-planning amendment (Phase 10):** this report's "Tech stack
+> agreement" check below refers to `llama-3.3-70b-versatile`, the model
+> planned at the time. Live verification against Groq's real API during
+> implementation found that model had been removed from Groq's catalog;
+> it was replaced with `qwen/qwen3.8-27b` (see ADR-08 in
+> `docs/ARCHITECTURE_DECISIONS.md` for the full reasoning and evidence).
+> This is left as a historical record of the planning-time decision rather
+> than silently rewritten — every other document has been updated to the
+> current model name.
+
 ## Deliverable Checklist
 
 Requirements

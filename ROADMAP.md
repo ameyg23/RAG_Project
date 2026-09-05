@@ -226,17 +226,20 @@ query-by-filter returns expected chunk count; KB-isolation test passes.
 **Definition of done:** a real chunk round-trips (embed → upsert → query →
 retrieve) against the live Qdrant free cluster.
 
-**Status note (honest, not glossed over):** `backend/retrieval/vector_store.py`
-is fully implemented and its round-trip/KB-isolation/idempotency/delete
-guarantees are verified — but against `qdrant-client`'s embedded in-memory
-mode, not a real Qdrant Cloud cluster, because no Qdrant Cloud account has
-been created yet (that's a user action, `docs/DEPLOYMENT.md` step 1). The
-same client code talks to Qdrant Cloud once `QDRANT_URL`/`QDRANT_API_KEY`
-are set (`get_client()` picks the real cluster automatically when
-configured) — this is marked done because the module's logic is complete
-and correct, not because the literal "live cluster" wording above has been
-checked. Re-verify against the real cluster once credentials exist,
-naturally covered by Phase 21's deployment smoke test if not sooner.
+**Status note — live cluster now verified:** the user created a real Qdrant
+Cloud cluster and the round-trip (embed → upsert → query → retrieve →
+delete) was re-run against it directly, passing cleanly with test data
+cleaned up afterward. This live check caught a real bug the in-memory
+tests could not: Qdrant Cloud's server rejects filtering on a payload field
+with no index (`400 Bad Request`), while `qdrant-client`'s in-memory mode
+silently allows it. Fixed in `ensure_collection()` by creating keyword
+payload indexes on `knowledge_base_id` and `document_id` at collection-
+creation time — see the ADR-07 update in `docs/ARCHITECTURE_DECISIONS.md`
+for the full account. A mock-based regression test
+(`test_ensure_collection_creates_required_payload_indexes`) now guards
+against this regressing even in in-memory-only CI runs. This phase's
+Definition of Done is now genuinely, literally met — not just the module
+logic, but the actual live-cluster wording above.
 
 ---
 
@@ -272,7 +275,9 @@ integration).
 `docs/DEPLOYMENT.md` step 2.
 
 **Tasks:** implement `retrieval/generation.py` — Groq client call with
-`llama-3.3-70b-versatile`, temperature 0.1–0.2, mapped error handling for
+`qwen/qwen3.8-27b` (ADR-08 — replaced the originally-planned
+`llama-3.3-70b-versatile` after live verification found it removed from
+Groq's catalog), temperature 0.1–0.2, mapped error handling for
 timeout/rate-limit/network failure per FR-054.
 
 **Files/components affected:** `backend/retrieval/generation.py`.

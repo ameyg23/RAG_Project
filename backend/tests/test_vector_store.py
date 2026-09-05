@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from qdrant_client import QdrantClient
@@ -16,6 +17,27 @@ def fresh_in_memory_client():
     """Every test gets its own isolated in-memory Qdrant instance."""
     vector_store.set_client(QdrantClient(":memory:"))
     yield
+
+
+def test_ensure_collection_creates_required_payload_indexes():
+    # Regression guard for a real bug found by verifying against a live
+    # Qdrant Cloud cluster: the server (unlike the in-memory mode used
+    # everywhere else in this file) rejects a filter on a field with no
+    # payload index at all. In-memory Qdrant silently no-ops index
+    # creation and never enforces it, so it can't catch a future removal
+    # of these calls by itself — this test verifies the calls actually
+    # happen, using a mock, since that's observable regardless of backend.
+    mock_client = MagicMock()
+    mock_client.collection_exists.return_value = False
+    vector_store.set_client(mock_client)
+
+    vector_store.ensure_collection()
+
+    mock_client.create_collection.assert_called_once()
+    indexed_fields = {
+        call.kwargs.get("field_name") for call in mock_client.create_payload_index.call_args_list
+    }
+    assert indexed_fields == {"knowledge_base_id", "document_id"}
 
 
 def _chunks_and_vectors(filename, *, document_id, knowledge_base_id, document_name=None):

@@ -15,6 +15,11 @@ class Settings:
     EMBEDDING_MODEL_NAME: str = os.environ.get(
         "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
     )
+    # Default per ADR-08. Groq's free-tier model catalog changes over time
+    # (this default itself replaced a since-removed model during Phase 10) —
+    # re-verify with client.models.list() before assuming a hardcoded name
+    # is still valid.
+    LLM_MODEL_NAME: str = os.environ.get("LLM_MODEL_NAME", "qwen/qwen3.8-27b")
     ENVIRONMENT: str = os.environ.get("ENVIRONMENT", "development")
 
 

@@ -44,7 +44,7 @@ every technology choice.
 | Backend | FastAPI (Python) |
 | Embeddings | Local `sentence-transformers/all-MiniLM-L6-v2` |
 | Vector DB | Qdrant Cloud (free tier) |
-| LLM | Groq (`llama-3.3-70b-versatile`, free tier) |
+| LLM | Groq (`qwen/qwen3.8-27b`, free tier) |
 | Frontend hosting | Cloudflare Pages |
 | Backend hosting | Render (free web service) |
 

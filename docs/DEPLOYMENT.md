@@ -74,14 +74,21 @@ extracted chunks (which live in Qdrant, covered above).
 
 ## LLM — Groq
 
-- **Provider / model:** Groq, `llama-3.3-70b-versatile`.
+- **Provider / model:** Groq, `qwen/qwen3.8-27b` (see ADR-08 — the
+  originally-planned `llama-3.3-70b-versatile` had been removed from Groq's
+  catalog by the time this was checked against the real API during Phase 10
+  implementation; the actually-available model list was confirmed live via
+  `client.models.list()`, not assumed).
 - **Free limits (as verified 2026-09):** no credit card required; roughly
   30 requests/minute and 14,400 requests/day at the organization level,
   with tighter model-specific daily/token caps for larger models. **These
   numbers drift — re-verify at
   [console.groq.com/docs/rate-limits](https://console.groq.com/docs/rate-limits)
   before relying on them for a real launch**, rather than treating today's
-  figures as permanently fixed.
+  figures as permanently fixed. **The model catalog drifts too** — this
+  project's own history is proof (see ADR-08); re-run
+  `client.models.list()` before any redeploy rather than trusting a
+  hardcoded model name indefinitely.
 - **Rate-limit / quota behavior:** exceeding limits returns HTTP 429 from
   Groq, which the backend maps to the sanitized `502 LLM_UNAVAILABLE`
   response defined in `docs/API.md` — never a raw provider error.

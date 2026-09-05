@@ -188,9 +188,11 @@ rationale.
 ### 12. LLM
 
 - **Input:** the constructed prompt.
-- **Processing:** call Groq's chat completion API (`llama-3.3-70b-versatile`),
-  temperature low (0.1–0.2) to favor extractive, grounded answers over
-  creative ones.
+- **Processing:** call Groq's chat completion API (`qwen/qwen3.8-27b` — see
+  ADR-08 for why this replaced the originally-planned `llama-3.3-70b-versatile`,
+  which Groq had removed from its catalog by the time this was verified
+  against the real API), temperature low (0.1–0.2) to favor extractive,
+  grounded answers over creative ones.
 - **Output:** raw answer text.
 - **Technology:** Groq API (ADR-08).
 - **Failure modes:** rate limit exceeded, timeout, network error, malformed
@@ -239,7 +241,7 @@ rationale.
 | Distance metric | Cosine similarity | Standard for normalized sentence embeddings |
 | Top-K | 5 | Enough diversity for citation without exceeding LLM context budget |
 | Min similarity threshold | 0.35 | Empirically tuned against `docs/RAG_EVALUATION.md` dataset |
-| LLM | Groq `llama-3.3-70b-versatile` | Free, fast, no card required (ADR-08) |
+| LLM | Groq `qwen/qwen3.8-27b` | Free, fast, no card required, non-reasoning (ADR-08) |
 | LLM temperature | 0.1–0.2 | Favor grounded/extractive answers |
 | Context budget | ≈5 chunks × 800 chars ≈ 4,000 chars | Comfortably inside Groq free-tier TPM limits |
 
