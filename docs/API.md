@@ -317,6 +317,26 @@ exhaustion surfaces as the `502` above.
 
 ---
 
+## Error Code Reference
+
+Every `error.code` value used across the endpoints above (added during Phase
+3 implementation to make the shape in the header concrete — this table is
+the authoritative list, kept in sync with `backend/errors.py` usage):
+
+| Code | HTTP status | Used by |
+|---|---|---|
+| `NO_FILES_PROVIDED` | 400 | `POST /documents/upload` |
+| `TOO_MANY_FILES` | 400 | `POST /documents/upload` |
+| `FILE_TOO_LARGE` | 400 | `POST /documents/upload` |
+| `UNSUPPORTED_FILE_TYPE` | 400 | `POST /documents/upload` |
+| `VALIDATION_ERROR` | 400 | Any endpoint — generic Pydantic request-shape validation failure (e.g. empty/oversized `POST /chat` message) |
+| `FORBIDDEN_KNOWLEDGE_BASE` | 403 | `GET /knowledge-bases/{id}/documents`, `GET /documents/{id}/status`, `DELETE /documents/{id}`, `POST /chat` — session does not own the requested `kb_user_*`, or (delete only) the target is `kb_demo` |
+| `KNOWLEDGE_BASE_NOT_FOUND` | 404 | `GET /knowledge-bases/{id}/documents`, `POST /chat` |
+| `DOCUMENT_NOT_FOUND` | 404 | `GET /documents/{id}/status`, `DELETE /documents/{id}` |
+| `EMPTY_KNOWLEDGE_BASE` | 503 | `POST /chat` — target KB has zero `READY` documents (FR-056) |
+| `LLM_UNAVAILABLE` | 502 | `POST /chat` — Groq/vector-DB dependency failure (lands with real retrieval in Phase 10-12; not reachable in the Phase 3 stub) |
+| `INTERNAL_ERROR` | 500 | Any endpoint — unexpected server error, sanitized per `docs/SECURITY.md` (Error Leakage); no endpoint above documents a deliberate 500, this is the global fallback |
+
 ## Cross-Cutting Rules
 
 - **No secret values ever appear in any request or response body** — this

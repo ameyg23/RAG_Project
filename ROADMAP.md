@@ -64,7 +64,7 @@ following only `docs/ENVIRONMENT.md` and this phase's setup steps.
 
 ---
 
-## Phase 2 [ ] — Frontend Foundation
+## Phase 2 [x] — Frontend Foundation
 
 **Objective:** build the app shell and routing/state structure described in
 `ARCHITECTURE.md` §2, with no real data yet.
@@ -88,7 +88,7 @@ console errors; API client's function signatures match every endpoint in
 
 ---
 
-## Phase 3 [ ] — Backend Foundation
+## Phase 3 [x] — Backend Foundation
 
 **Objective:** stand up the FastAPI app skeleton, routing, and config
 loading, with all endpoints returning stub/mock data.
