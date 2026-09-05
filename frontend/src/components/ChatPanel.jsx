@@ -15,7 +15,9 @@ const COLD_START_DELAY_MS = 5000
 export const META_PROMPT = 'What can I ask about this knowledge base?'
 
 // Client-side-only response to the meta-question — lists the real ingested
-// document names plus the real curated suggested questions. Never touches
+// document names as plain text, and returns the real curated suggested
+// questions separately so the caller can render them as clickable links
+// rather than repeating them a second time as plain text. Never touches
 // sendChatMessage()/the real LLM.
 async function buildMetaResponse(knowledgeBaseId, suggestions) {
   let documentNames = []
@@ -23,21 +25,22 @@ async function buildMetaResponse(knowledgeBaseId, suggestions) {
     const result = await listDocuments(knowledgeBaseId)
     documentNames = (result.documents ?? []).map((doc) => doc.filename)
   } catch {
-    // Non-fatal — the meta-response still lists the suggested questions
+    // Non-fatal — the meta-response still offers the suggested questions
     // even if the document list itself couldn't be fetched.
   }
 
-  const lines = []
-  if (documentNames.length > 0) {
-    lines.push(`This knowledge base includes: ${documentNames.join(', ')}.`, '')
-  }
-  if (suggestions.length > 0) {
-    lines.push('You can ask things like:')
-    suggestions.forEach((q) => lines.push(`• ${q}`))
-  } else {
-    lines.push('Try asking a question about the documents listed above.')
-  }
-  return lines.join('\n')
+  const text =
+    documentNames.length > 0
+      ? `This knowledge base includes: ${documentNames.join(', ')}.\n\n${
+          suggestions.length > 0
+            ? 'You can ask things like:'
+            : 'Try asking a question about the documents listed above.'
+        }`
+      : suggestions.length > 0
+        ? 'You can ask things like:'
+        : 'Try asking a question about your knowledge base.'
+
+  return { text, suggestions }
 }
 
 // Server-provided messages are already safe, user-facing text (docs/API.md) —
@@ -134,10 +137,16 @@ export default function ChatPanel() {
     setIsSending(true)
 
     // The meta-question is answered entirely client-side — never spends a
-    // real LLM call on a question that has no content-based answer.
+    // real LLM call on a question that has no content-based answer. The
+    // suggested questions are attached as promptSuggestions and rendered as
+    // clickable links directly on this message, not repeated as plain text
+    // (docs/UI_UX.md-style — one representation of each question, not two).
     if (isDemo && trimmed === META_PROMPT) {
-      const content = await buildMetaResponse(activeKnowledgeBaseId, suggestedQuestions)
-      setChatMessages((prev) => [...prev, { role: 'assistant', content, sources: [] }])
+      const { text, suggestions } = await buildMetaResponse(activeKnowledgeBaseId, suggestedQuestions)
+      setChatMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: text, sources: [], promptSuggestions: suggestions },
+      ])
       setIsSending(false)
       return
     }
@@ -198,6 +207,21 @@ export default function ChatPanel() {
         {chatMessages.map((message, index) => (
           <div key={index} className={`chat-message chat-message--${message.role}`}>
             <p className="chat-message__content">{message.content}</p>
+            {message.role === 'assistant' && message.promptSuggestions?.length > 0 && (
+              <div className="chat-panel__suggestions">
+                {message.promptSuggestions.map((question) => (
+                  <button
+                    key={question}
+                    type="button"
+                    className="chat-suggestion-chip"
+                    onClick={() => sendMessage(question)}
+                    disabled={isSending}
+                  >
+                    {question}
+                  </button>
+                ))}
+              </div>
+            )}
             {message.role === 'assistant' && message.sources?.length > 0 && (
               <ul className="chat-message__sources">
                 {/* One row per distinct document, name only — a single answer
@@ -239,23 +263,6 @@ export default function ChatPanel() {
           </p>
         )}
       </div>
-
-      {isReady && isDemo && suggestedQuestions.length > 0 && chatMessages.length > 0 && (
-        <div className="chat-panel__suggestions">
-          <p className="chat-panel__suggestions-label">You can also ask:</p>
-          {suggestedQuestions.map((question) => (
-            <button
-              key={question}
-              type="button"
-              className="chat-suggestion-chip"
-              onClick={() => sendMessage(question)}
-              disabled={isSending}
-            >
-              {question}
-            </button>
-          ))}
-        </div>
-      )}
 
       <form className="chat-panel__composer" onSubmit={handleSubmit}>
         <input

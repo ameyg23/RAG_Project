@@ -65,7 +65,7 @@ describe('ChatPanel', () => {
     expect(listDocuments).not.toHaveBeenCalledWith('kb_demo')
   })
 
-  it('sending the meta-question answers client-side with document names and real questions, never calling the real chat API', async () => {
+  it('sending the meta-question answers client-side with document names and clickable questions (no duplicate text), never calling the real chat API', async () => {
     listDocuments.mockImplementation((kbId) =>
       kbId === 'kb_demo'
         ? Promise.resolve({
@@ -83,11 +83,21 @@ describe('ChatPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
 
     expect(await screen.findByText(/handbook\.md/i)).toBeInTheDocument()
-    expect(screen.getByText(/• What is X\?/)).toBeInTheDocument()
+    // The question appears exactly once, as a clickable button - not once as
+    // plain text plus again as a separate link (the duplication this is
+    // guarding against).
+    expect(screen.getAllByText(/what is x\?/i)).toHaveLength(1)
+    const suggestionButton = screen.getByRole('button', { name: /what is x\?/i })
+    expect(suggestionButton.tagName).toBe('BUTTON')
     expect(sendChatMessage).not.toHaveBeenCalled()
+
+    sendChatMessage.mockResolvedValue({ answer: 'The real answer.', sources: [] })
+    fireEvent.click(suggestionButton)
+    expect(await screen.findByText(/the real answer/i)).toBeInTheDocument()
+    expect(sendChatMessage).toHaveBeenCalledWith('kb_demo', 'What is X?')
   })
 
-  it('shows suggested question chips only after the first message is sent, not before', async () => {
+  it('does not show any suggestion links after sending a real (non-meta) question', async () => {
     sendChatMessage.mockResolvedValue({ answer: 'answer', sources: [] })
     render(
       <SessionProvider>
@@ -95,13 +105,12 @@ describe('ChatPanel', () => {
       </SessionProvider>
     )
     await screen.findByDisplayValue(META_PROMPT)
-    expect(screen.queryByRole('button', { name: /what is x\?/i })).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A real question' } })
     fireEvent.click(screen.getByRole('button', { name: /send/i }))
     await screen.findByText(/answer/i)
 
-    expect(await screen.findByRole('button', { name: /what is x\?/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /what is x\?/i })).not.toBeInTheDocument()
   })
 
   it('sends a message and renders the answer with just its source document names', async () => {
