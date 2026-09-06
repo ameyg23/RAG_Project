@@ -14,7 +14,7 @@ template with placeholder values.
 | `CORS_ALLOWED_ORIGIN` | The single frontend origin allowed to call this API | Required | `http://localhost:5173` (dev) / `https://your-app.pages.dev` (prod) | `main.py` CORS middleware | No |
 | `EMBEDDING_MODEL_NAME` | Which sentence-transformers model to load locally | Optional (default: `sentence-transformers/all-MiniLM-L6-v2`) | `sentence-transformers/all-MiniLM-L6-v2` | `ingestion/embed.py` | No |
 | `LLM_MODEL_NAME` | Which Groq-hosted model to call | Optional (default: `qwen/qwen3.8-27b` — ADR-08; Groq's free-tier catalog changes over time, re-verify with `client.models.list()` before assuming a hardcoded name is still valid) | `qwen/qwen3.8-27b` | `retrieval/generation.py` | No |
-| `PORT` | Port the ASGI server binds to | Required in production (provided automatically by Render) | `8000` (local dev default) | `uvicorn` start command | No |
+| `PORT` | Port the ASGI server binds to | Required in production (provided automatically by Cloud Run at container start — see ADR-19; was previously provided by Render) | `8000` (local dev default) | `uvicorn` start command (`backend/Dockerfile`'s `CMD`) | No |
 
 ## Frontend (`frontend/`, build-time only, Vite convention)
 
@@ -30,9 +30,9 @@ Frontend env vars live in their own `frontend/.env.example` once the
 | Variable | Local development | Production |
 |---|---|---|
 | `CORS_ALLOWED_ORIGIN` | `http://localhost:5173` | The deployed Cloudflare Pages URL (or custom domain) |
-| `VITE_API_BASE_URL` | `http://localhost:8000` | The deployed Render backend URL |
-| `PORT` | `8000` (or any free local port) | Provided automatically by Render — do not hard-code |
-| `GROQ_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` | A developer's own free-tier keys, in a local untracked `.env` | Set via Render's dashboard, never in a committed file |
+| `VITE_API_BASE_URL` | `http://localhost:8000` | The deployed Cloud Run backend's `*.run.app` URL (previously the Render backend URL — see ADR-19) |
+| `PORT` | `8000` (or any free local port) | Provided automatically by Cloud Run at container start — do not hard-code (see `backend/Dockerfile`) |
+| `GROQ_API_KEY` / `QDRANT_URL` / `QDRANT_API_KEY` | A developer's own free-tier keys, in a local untracked `.env` | Set via Cloud Run's console environment-variable UI, never in a committed file (Render's dashboard if using the paid-tier fallback, `docs/DEPLOYMENT.md`) |
 
 ## Acceptance Criteria Check
 

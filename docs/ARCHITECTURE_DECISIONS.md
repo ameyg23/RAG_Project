@@ -1108,3 +1108,135 @@ right shape to add a `request.is_disconnected()` check between stages
 - Docs (this pass): `docs/API.md` (`POST /chat` contract),
   `docs/RAG_PIPELINE.md` (Stage 14 amendment + streaming-stage cross-reference),
   `ARCHITECTURE.md` §6 (sequence diagram).
+
+---
+
+## ADR-19: Backend Hosting — Google Cloud Run (supersedes ADR-10's Render)
+
+**Decision:** Move the backend off Render's free web service onto Google
+Cloud Run, deployed via Cloud Run's "continuously deploy from a repository"
+flow (Cloud Build reading a new `backend/Dockerfile`), rather than staying
+on Render's native-Python buildpack. `render.yaml` is left in the repository
+unchanged, as a documented paid-tier fallback (Render Standard, if the user
+ever chooses to pay for more RAM there instead) — not deleted, per this
+project's established practice of preserving superseded infrastructure as a
+recorded option rather than erasing it.
+
+**Why this happened — evidence, not speculation:** ADR-17's revert already
+established that Render's free-tier **512MB RAM ceiling** was the real
+constraint (loading the embedding model alongside a reranker OOM-crashed the
+process). Removing the reranker was expected to bring the process back
+under that ceiling. It did not. After the revert, repeated live testing
+against the deployed Render free instance showed: `GET /health` reliably
+returns `200` (the process is up and idle), but a real `POST /chat` request
+— which must load `BAAI/bge-small-en-v1.5` via `sentence-transformers`/
+CPU-`torch` to embed the query, on top of FastAPI/uvicorn/Groq-client/
+Qdrant-client overhead already resident — reliably returns a `502` shortly
+after the request starts, then the instance restarts. This confirms the
+embedding model alone (not the now-removed reranker) is enough to exceed
+512MB under real request load, once actual inference memory (not just
+import-time weight loading) is accounted for. **The problem is Render's
+free-tier RAM ceiling itself, not any one model choice this project made on
+top of it** — no amount of further application-level memory tuning changes
+a hard 512MB platform limit.
+
+**Options considered:**
+1. Stay on Render free tier; try to shrink memory further (smaller embedding
+   model, quantization, lazy-unload-after-request).
+2. Pay for Render Standard (2GB+ RAM, ~$7-25/mo) — rejected outright, since
+   NFR-001 (zero cost) is a hard project requirement, not a preference.
+3. Move to a different free-tier PaaS with more RAM headroom and no card
+   required (Fly.io free allowance, Google Cloud Run, Google Cloud Run
+   equivalents).
+4. Google Cloud Run (chosen).
+
+**Selected:** Option 4 — Google Cloud Run.
+
+**Reason:** Cloud Run's free tier allows configuring container memory up to
+32GB per instance (no fixed 512MB ceiling like Render free), while still
+being genuinely free: ~180,000 vCPU-seconds and ~360,000 GiB-seconds of
+free compute per month, plus 2 million free requests/month, with **no
+credit card required to use the free tier**. At a chosen 1GiB/1vCPU
+allocation (see below), that free compute allowance comfortably covers a
+low-traffic portfolio demo — far more headroom than Render free's 512MB
+ever gave this specific workload, which is the exact dimension that broke.
+Option 1 was rejected because it treats a hard platform ceiling as a tuning
+problem when live evidence (above) already shows the current, already-
+reverted-once configuration doesn't fit — further shrinking now risks
+degrading answer quality (a smaller embedding model) to chase a limit that
+a different free tier simply doesn't impose. Option 3's Fly.io alternative
+was not pursued once Cloud Run's memory/compute free-tier numbers were
+confirmed sufficient and no worse in card-free terms.
+
+**What changes:**
+- New `backend/Dockerfile` and `backend/.dockerignore` (this ADR's
+  implementation) — Cloud Run's "deploy from a repository" flow requires a
+  Dockerfile (unlike Render's native Python buildpack); Cloud Build reads
+  it directly, no local Docker/`gcloud` install needed by anyone deploying
+  this project.
+- Build context / source location must point at `backend/`, not the repo
+  root — the Dockerfile lives inside `backend/` (monorepo layout, same
+  reason `render.yaml` sets `rootDir: backend`).
+- Same 3 required secrets (`GROQ_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`)
+  plus `CORS_ALLOWED_ORIGIN`, now set in Cloud Run's console instead of
+  Render's dashboard — no code change (ADR-15's backend-only environment
+  variable pattern is provider-agnostic by design).
+- `$PORT` is still read dynamically by `uvicorn` at container start (Cloud
+  Run's own convention, coincidentally identical to Render's) — no
+  application code changes.
+- `OMP_NUM_THREADS`/`MKL_NUM_THREADS`/`OPENBLAS_NUM_THREADS=1` — the same
+  BLAS-thread-pool cap `render.yaml` already carried — is set as `ENV` in
+  `backend/Dockerfile` directly instead of in a provider dashboard, since
+  Cloud Run's console env vars would need to be re-entered by the user
+  anyway and baking the (non-secret) values into the image is one less
+  manual step for a value that never changes per-deploy.
+
+**What does not change:** the RAG pipeline, ingestion, retrieval, and
+generation code are completely untouched — this is purely an infrastructure
+swap. `render.yaml` stays in the repository, functional and accurate, as a
+documented paid-tier path (Render Standard) if the user ever prefers Render
+enough to pay for it. Qdrant Cloud (ADR-07) and Groq (ADR-08) are unchanged;
+Cloudflare Pages (ADR-09) frontend hosting is unchanged — only
+`VITE_API_BASE_URL` will need updating once the Cloud Run service URL
+exists (`docs/DEPLOYMENT.md`).
+
+**Cold starts:** Cloud Run's scale-to-zero (`min-instances=0`, recommended
+here to stay within free-tier compute-second allowances) has the same
+category of cold-start behavior Render's free tier already had — the
+frontend's existing "waking up" UX handling (`docs/UI_UX.md`, built during
+earlier phases for exactly this Render behavior) applies unchanged and
+needs no rework. `min-instances=1` remains available if the user later
+wants to eliminate cold starts, at the cost of continuous billing outside
+the free tier — documented as a tradeoff, not a recommendation.
+
+**Advantages:** genuinely free tier at real headroom for this workload's
+actual measured memory need (evidenced above, not assumed); no card
+required; same Dockerfile-based deploy works identically if the user later
+wants to self-host or move to another container platform (Cloud Run,
+unlike Render's buildpack, is a standard OCI image — strictly more portable,
+not less); no application code changes, only infrastructure/docs.
+
+**Disadvantages:** requires a `Dockerfile`/`.dockerignore` that didn't
+previously exist (small, one-time authoring cost); Cloud Run's free-tier
+compute-second accounting is usage-metered rather than Render's flat
+instance-hours model, so very bursty/heavy traffic (unlikely for a
+portfolio demo) could in theory approach the free allowance faster than
+Render's simpler 750-hour figure — monitored per `docs/DEPLOYMENT.md`'s
+Cloud Run section, same spirit as the existing Qdrant suspension-risk
+monitoring practice (ADR-07).
+
+**Free-tier implications:** $0, no card entered, provided free-tier compute-
+second/request allowances aren't exceeded (unlikely at this traffic scale;
+monitored per `docs/DEPLOYMENT.md`).
+
+**Future migration:** if free-tier compute is ever actually exceeded, the
+options are the same shape as Render's own future-migration note — pay for
+more Cloud Run compute, or move the same `backend/Dockerfile` to any other
+OCI-compatible free tier (Fly.io, etc.) with no application code change,
+since the container image itself is the portable unit.
+
+**Files touched by this ADR's implementation:** `backend/Dockerfile` (new),
+`backend/.dockerignore` (new), `docs/DEPLOYMENT.md` (new Cloud Run section,
+Render section marked superseded), `docs/ENVIRONMENT.md` (Cloud Run env var
+notes), `ARCHITECTURE.md` §1/§9 (deployment diagrams). `render.yaml` is
+explicitly untouched (kept as the documented paid-tier fallback).

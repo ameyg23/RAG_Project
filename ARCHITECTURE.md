@@ -11,7 +11,7 @@ flowchart LR
         UI["React + Vite SPA\n(Cloudflare Pages)"]
     end
 
-    subgraph Backend["FastAPI Backend (Render free)"]
+    subgraph Backend["FastAPI Backend (Google Cloud Run free tier, ADR-19)"]
         API["REST API layer"]
         ING["Ingestion pipeline"]
         RET["Retrieval + generation pipeline"]
@@ -216,17 +216,21 @@ flowchart TB
     end
 
     FE_SRC -- "Cloudflare Pages\nbuild: vite build" --> CFP["Cloudflare Pages\n(static hosting, free)"]
-    BE_SRC -- "Render\nbuild: pip install" --> RND["Render free web service\n(FastAPI, sleeps after 15 min idle)"]
+    BE_SRC -- "Cloud Build\nbuild: backend/Dockerfile" --> RUN["Cloud Run service\n(FastAPI, min-instances=0, scales to zero)"]
 
-    CFP -- "HTTPS fetch\n(CORS-restricted to CFP origin)" --> RND
-    RND -- "API key from env vars" --> GROQ["Groq API (free tier)"]
-    RND -- "API key from env vars" --> QDR["Qdrant Cloud (free tier)"]
+    CFP -- "HTTPS fetch\n(CORS-restricted to CFP origin)" --> RUN
+    RUN -- "API key from env vars" --> GROQ["Groq API (free tier)"]
+    RUN -- "API key from env vars" --> QDR["Qdrant Cloud (free tier)"]
 
     Visitor(("Visitor browser")) --> CFP
 ```
 
-Deployment sequence, environment variables, and cost model are fully
-specified in `docs/DEPLOYMENT.md` and `docs/ENVIRONMENT.md`.
+Backend hosting moved from Render to Google Cloud Run (ADR-19) after
+Render's free-tier 512MB RAM ceiling proved insufficient for real `/chat`
+request load even after the ADR-17 reranker revert; `render.yaml` remains
+in the repository as a documented paid-tier fallback. Deployment sequence,
+environment variables, and cost model are fully specified in
+`docs/DEPLOYMENT.md` and `docs/ENVIRONMENT.md`.
 
 ## 10. Security Boundaries
 
