@@ -88,6 +88,23 @@ export function SessionProvider({ children }) {
 
   const userKnowledgeBaseId = sessionToken ? `kb_user_${sessionToken}` : null
 
+  // The "Your Documents" tab is clickable even before a session token exists
+  // (see KnowledgeBaseSelector) — activeKnowledgeBaseId becomes `null` in
+  // that case, which already renders the right (empty) UserDocumentsView.
+  // Once a real token arrives (the eager /health call above, or the first
+  // upload response), promote that `null` to the real id so chat requests
+  // and the sidebar's document list resolve against it — but only while the
+  // visitor is actually sitting on that placeholder, never yanking them away
+  // from an explicitly-selected Demo view. Uses the raw setState (not the
+  // setActiveKnowledgeBaseId wrapper) since this is the same KB resolving to
+  // its real id, not a user-initiated switch — the conversation shouldn't
+  // reset because of it.
+  useEffect(() => {
+    if (activeKnowledgeBaseId === null && userKnowledgeBaseId) {
+      setActiveKnowledgeBaseIdState(userKnowledgeBaseId)
+    }
+  }, [activeKnowledgeBaseId, userKnowledgeBaseId])
+
   const refetchUserDocuments = useCallback(async () => {
     if (!userKnowledgeBaseId) return
     try {
@@ -161,7 +178,19 @@ export function SessionProvider({ children }) {
   const uploadUserDocuments = useCallback(
     async (files) => {
       const result = await uploadDocuments(files)
-      if (result.session_token) setSessionTokenState(result.session_token)
+      if (result.session_token) {
+        // Sync the module-level token client.js's request() actually reads
+        // RIGHT NOW, synchronously — not just via the sessionToken-keyed
+        // effect above, which only runs on the next render. The very next
+        // line polls document status using this brand-new token (issued by
+        // this same upload, when no token existed before it); waiting for
+        // the effect left that first poll going out with the stale/null
+        // token, getting a 403, and pollDocumentStatus's catch silently
+        // gives up forever — the document stayed stuck on its initial
+        // status (e.g. PROCESSING) with no further updates, ever.
+        setStoredSessionToken(result.session_token)
+        setSessionTokenState(result.session_token)
+      }
       setUserDocuments((prev) => [...prev, ...(result.documents ?? [])])
       ;(result.documents ?? []).forEach((doc) => pollDocumentStatus(doc.document_id))
       refetchKnowledgeBases()

@@ -24,7 +24,7 @@ export default function KnowledgeBaseSelector() {
           role="tab"
           aria-selected={activeKnowledgeBaseId === userKnowledgeBaseId}
           className={`kb-badge kb-badge--user${activeKnowledgeBaseId === userKnowledgeBaseId ? ' is-active' : ''}`}
-          onClick={() => userKnowledgeBaseId && setActiveKnowledgeBaseId(userKnowledgeBaseId)}
+          onClick={() => setActiveKnowledgeBaseId(userKnowledgeBaseId)}
         >
           <FolderOpen size={16} aria-hidden="true" />
           <span>Your Documents</span>
