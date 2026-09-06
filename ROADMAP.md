@@ -700,14 +700,32 @@ asked for the actual memory driver to be fixed instead. ADR-20 did that:
 swapped the embedding runtime to `fastembed`/ONNX Runtime (same model, no
 PyTorch dependency), measured at ~191MB RSS under real inference — well
 under 512MB — and backend hosting reverted to Render. The demo KB has been
-reseeded with the new embedding runtime's vectors, and the full test suite
-(157 tests) and a live local `/chat` request both pass against it. **Still
-not done:** an actual live Render redeploy with this code and a fresh smoke
-test against the public URL haven't happened yet in this pass — that's the
-remaining step to close this phase for real, plus the frontend's Cloudflare
-Pages deploy. `backend/Dockerfile`/Cloud Run (ADR-19) is kept as a
-documented fallback, not deleted, in case a future feature ever outgrows
-Render's free tier again.
+reseeded with the new embedding runtime's vectors.
+
+**Confirmed live this session (both halves of Phase 21):**
+- **Backend:** the actual deployed Render instance at
+  `https://rag-chatbot-backend-ndi0.onrender.com` was hit directly —
+  `GET /health` → `200`, `vector_store: connected`; a real `POST /chat`
+  (the exact request that OOM'd before) → `200` in ~8s with a correct
+  grounded, cited answer; `GET /health` immediately after → still `200`,
+  no crash/restart (this is precisely the failure signature ADR-19
+  documented: health fine, chat 502, then a restart — it does not
+  reproduce anymore).
+- **Frontend:** deployed to Cloudflare Pages via `wrangler` CLI (the user
+  authorized a `wrangler login` OAuth flow; no dashboard/browser tool
+  needed on the agent side) at
+  `https://rag-chatbot-frontend-b7i.pages.dev`, built with
+  `VITE_API_BASE_URL` pointing at the live Render URL above (verified baked
+  into the built bundle before deploying).
+- `render.yaml`'s `CORS_ALLOWED_ORIGIN` updated to the real Cloudflare
+  Pages origin and pushed; a background check is confirming the live
+  Render service actually picks this up via its Blueprint sync (this note
+  will be stale on that one point until that check lands — see git log/
+  session state for the final word).
+
+`backend/Dockerfile`/Cloud Run (ADR-19) is kept as a documented fallback,
+not deleted, in case a future feature ever outgrows Render's free tier
+again.
 
 ---
 
@@ -733,12 +751,28 @@ live public deployment.
 public URL, observed directly in a browser (per this session's guidance to
 verify UI changes by using the feature, not just by passing tests).
 
-**Status note:** blocked on Phase 21 (not yet deployed); see that phase's
-status note. All four journeys have equivalent coverage against the local
-system already (backend E2E tests in Phase 19, plus this session's own
-fresh-clone local run), but that is not a substitute for this phase's
-explicit scope — live-deployment behaviors like the Render cold-start
-"waking up" state cannot be observed until something is actually deployed.
+**Status note (updated 2026-09-06):** Phase 21 is now live (both backend
+and frontend), so this phase is partially, not fully, closed:
+- **Explore demo KB + ask a question:** done, directly against the live
+  Render URL (not through a browser, since no browser tool was available
+  this session — a real `POST /chat` was sent via HTTP directly, matching
+  the exact request shape the frontend sends). Returned a correct,
+  grounded, cited answer, and the backend didn't crash/restart afterward —
+  the specific failure mode ADR-19 documented does not reproduce.
+- **Upload a document + chat against it:** not yet done against the live
+  deployment this pass.
+- **Oversized-file error case:** not yet done against the live deployment
+  this pass.
+- **Cold-start "waking up" state:** not yet observed against the real
+  deployment — the instance was already warm both times it was checked
+  this session.
+- **In a real browser:** none of the above were observed through an actual
+  browser this pass (no browser tool was available) — only via direct HTTP
+  requests reproducing what the frontend would send. This phase's own
+  Definition of Done calls for browser observation specifically, so treat
+  the items above as strong evidence, not a substitute for actually
+  clicking through the live frontend at
+  `https://rag-chatbot-frontend-b7i.pages.dev` at least once.
 
 ---
 

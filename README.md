@@ -1,16 +1,16 @@
 # RAG Chatbot
 
-> **Status: implemented and tested locally, redeploying to Render — no
-> live URL yet.** Every feature below is real and verified (157 backend
-> tests, frontend tests — see Testing below). A first deployment attempt on
-> Render's free tier really did hit an OOM under real request load (the
-> embedding model + PyTorch was too heavy for the 512MB ceiling); the fix
-> was to swap the embedding runtime to `fastembed`/ONNX Runtime (no PyTorch
-> at all, ~191MB RSS measured under real inference) rather than move to a
-> different cloud provider — see ADR-20 in
-> `docs/ARCHITECTURE_DECISIONS.md`. Redeploying with this fix is the
-> immediate next step (`ROADMAP.md` Phase 21); nothing in this file is
-> aspirational — see `ROADMAP.md` for exact per-phase status.
+> **Status: live.** Backend deployed to Render
+> (`https://rag-chatbot-backend-ndi0.onrender.com`) and confirmed working
+> against a real `POST /chat` request — the exact request that previously
+> OOM'd, now fixed (ADR-20: embedding runtime moved from
+> `sentence-transformers`/PyTorch to `fastembed`/ONNX Runtime, ~191MB RSS
+> measured under real inference vs. the >512MB that broke Render's free
+> tier before). Frontend deployed to Cloudflare Pages at
+> `https://rag-chatbot-frontend-b7i.pages.dev`. Every feature below is real
+> and verified (157 backend tests, frontend tests — see Testing below);
+> nothing in this file is aspirational — see `ROADMAP.md` for exact
+> per-phase status.
 
 ## Project Overview
 
@@ -71,8 +71,8 @@ pipelines sharing the same embedding model and vector store — see
 | Embeddings | Local `BAAI/bge-small-en-v1.5` via `fastembed`/ONNX Runtime (384-dim, no external API, no PyTorch — ADR-20) |
 | Vector DB | Qdrant Cloud (free tier) |
 | LLM | Groq (`qwen/qwen3.8-27b`, free tier) |
-| Frontend hosting | Cloudflare Pages (planned — not yet deployed, see Deployment) |
-| Backend hosting | Render, free web service (redeploying with the ADR-20 memory fix, see Deployment) |
+| Frontend hosting | Cloudflare Pages — live |
+| Backend hosting | Render, free web service — live (ADR-20 memory fix confirmed working, see Deployment) |
 
 ## Screenshots
 
@@ -84,10 +84,13 @@ is deployed.)*
 
 ## Demo
 
-Not yet deployed — see the status note at the top of this file.
-Deployment (`ROADMAP.md` Phase 21) is deliberately paused pending further
-UI changes; there is no live URL. In the meantime, follow Setup below to
-run the full app locally.
+**Live:** [rag-chatbot-frontend-b7i.pages.dev](https://rag-chatbot-frontend-b7i.pages.dev)
+(Cloudflare Pages), backed by the real Render backend at
+`rag-chatbot-backend-ndi0.onrender.com`. Render's free-tier cold start
+applies — the first request after 15+ minutes of inactivity can take
+30-60 seconds while the instance wakes up; the UI's "waking up" state is
+designed around exactly this. Follow Setup below to run the full app
+locally instead.
 
 ## Setup
 
@@ -218,16 +221,26 @@ on live LLM calls.
 
 Full zero-cost plan (Cloudflare Pages + Render + Qdrant Cloud + Groq, all
 free tiers, no card required anywhere) in `docs/DEPLOYMENT.md`. **Current
-status: no live URL yet, redeploying to Render.** A real first deployment
-attempt on Render's free tier hit a genuine OOM under live request load
-(the `sentence-transformers`/PyTorch embedding runtime was too heavy for
-the 512MB ceiling); a detour through Google Cloud Run (ADR-19) was tried
-and then deliberately reverted — the user preferred to stay on Render
-rather than adopt a new cloud provider, so the actual fix was replacing the
-embedding runtime with `fastembed`/ONNX Runtime instead (ADR-20, ~191MB RSS
-measured under real inference). `render.yaml` is unchanged and ready; the
-remaining step is an actual Render redeploy of this fixed code and a fresh
-live smoke test against the public URL.
+status: live**, both halves confirmed working directly (not just a health
+check):
+
+- **Backend** — `https://rag-chatbot-backend-ndi0.onrender.com`. A real
+  first deployment attempt on Render's free tier hit a genuine OOM under
+  live request load (the `sentence-transformers`/PyTorch embedding runtime
+  was too heavy for the 512MB ceiling); a detour through Google Cloud Run
+  (ADR-19) was tried and then deliberately reverted — the user preferred to
+  stay on Render rather than adopt a new cloud provider, so the actual fix
+  was replacing the embedding runtime with `fastembed`/ONNX Runtime instead
+  (ADR-20, ~191MB RSS measured under real inference). Re-verified live: a
+  real `POST /chat` request against the deployed instance returned a
+  correct, grounded, cited answer, and a follow-up health check confirmed
+  no crash/restart afterward.
+- **Frontend** — `https://rag-chatbot-frontend-b7i.pages.dev`, deployed via
+  the `wrangler` CLI (Cloudflare's own OAuth device flow, authorized
+  directly by the user — no dashboard clicking needed), built with
+  `VITE_API_BASE_URL` pointing at the live backend URL above.
+- `render.yaml`'s `CORS_ALLOWED_ORIGIN` was updated to this real Cloudflare
+  Pages origin and pushed to `main`.
 
 ## Limitations
 
@@ -239,10 +252,11 @@ Known V1 constraints, stated honestly rather than glossed over:
 - **Uploaded documents are not durably retained** — a knowledge base is
   scoped to its session; nothing is represented to users as permanently
   stored.
-- **Render free-tier cold starts** (once deployed): the backend sleeps
-  after 15 minutes of inactivity; the next request pays a 30–60 second
-  cold-start penalty. The UI is designed around this, but it hasn't been
-  observed against a real deployed instance yet.
+- **Render free-tier cold starts**: the backend sleeps after 15 minutes of
+  inactivity; the next request pays a 30–60 second cold-start penalty. The
+  UI is designed around this; the instance was already warm when checked
+  live this session, so the actual "waking up" state hasn't been directly
+  observed against the real deployment yet (Phase 22 smoke-test item).
 - **Qdrant free-cluster inactivity suspension**: a free cluster suspends
   after 7 days and is deleted after 28 days of inactivity. Recovery is a
   one-command reseed (`backend/scripts/seed_demo_kb.py`), deliberately not
