@@ -240,7 +240,9 @@ check):
   directly by the user — no dashboard clicking needed), built with
   `VITE_API_BASE_URL` pointing at the live backend URL above.
 - `render.yaml`'s `CORS_ALLOWED_ORIGIN` was updated to this real Cloudflare
-  Pages origin and pushed to `main`.
+  Pages origin and pushed to `main` — confirmed live via a direct `OPTIONS`
+  preflight check against the deployed backend (Render's Blueprint sync
+  auto-redeployed on push, no manual dashboard step needed).
 
 ## Limitations
 

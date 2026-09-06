@@ -718,10 +718,10 @@ reseeded with the new embedding runtime's vectors.
   `VITE_API_BASE_URL` pointing at the live Render URL above (verified baked
   into the built bundle before deploying).
 - `render.yaml`'s `CORS_ALLOWED_ORIGIN` updated to the real Cloudflare
-  Pages origin and pushed; a background check is confirming the live
-  Render service actually picks this up via its Blueprint sync (this note
-  will be stale on that one point until that check lands — see git log/
-  session state for the final word).
+  Pages origin and pushed; **confirmed live** — Render's Blueprint sync
+  auto-redeployed on push (no manual dashboard step needed), verified via
+  a direct `OPTIONS` preflight against the deployed backend returning
+  `access-control-allow-origin: https://rag-chatbot-frontend-b7i.pages.dev`.
 
 `backend/Dockerfile`/Cloud Run (ADR-19) is kept as a documented fallback,
 not deleted, in case a future feature ever outgrows Render's free tier
