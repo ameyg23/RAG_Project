@@ -90,17 +90,29 @@ def generate(
 
 
 def answer_question(
-    query_vector: list[float], question: str, *, knowledge_base_id: str
+    chunks: list[retriever.RetrievedChunk], question: str
 ) -> tuple[str, ChunkContext]:
-    """Stage 8-11 end-to-end: retrieve, gate on empty context, generate.
+    """Stage 10-12 end-to-end: gate on empty context, build prompt, generate.
 
-    Layer 1 of the grounding strategy lives here: if retrieval returns no
-    usable chunks (empty or below the similarity threshold, Stage 9), this
-    returns NO_CONTEXT_RESPONSE and never calls generate() / Groq at all -
-    not just a similar-looking message, a genuine short-circuit.
+    `chunks` must already be the final Stage 9 output — retrieved (Stage 8),
+    reranked (Stage 8.5, ADR-17), and threshold-and-capped
+    (retriever.apply_rerank_threshold) by the caller (api/chat.py). This
+    function no longer performs retrieval itself: ADR-17 inserted a
+    reranking stage between retrieval and here, and that multi-step
+    orchestration belongs to the caller, not this module.
+
+    `question` must be the Stage 6.5 rewritten (standalone) query, not
+    necessarily the user's raw original message — see ADR-16 for why the
+    generation call uses the same rewritten text retrieval does (the
+    missing-referent problem a rewrite fixes for retrieval applies equally
+    to what the LLM is asked to answer).
+
+    Layer 1 of the grounding strategy lives here: if `chunks` is empty
+    (retrieval found nothing, or nothing survived Stage 8's similarity
+    pre-filter or Stage 9's rerank-score threshold), this returns
+    NO_CONTEXT_RESPONSE and never calls generate() / Groq at all - not just
+    a similar-looking message, a genuine short-circuit.
     """
-    chunks = retriever.retrieve(query_vector, knowledge_base_id=knowledge_base_id)
-
     if not chunks:
         return NO_CONTEXT_RESPONSE, ChunkContext(context_text="", citation_map={})
 

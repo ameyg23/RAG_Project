@@ -257,6 +257,16 @@ FR-021).
 **Auth:** demo KB requires no token; a `kb_user_*` target requires
 `X-Session-Token` matching the owner.
 
+**Response shape (ADR-18):** this endpoint streams. Everything checkable
+*before* the RAG pipeline starts (unknown/forbidden `knowledge_base_id`,
+empty KB, invalid `message`) is still a plain, non-streamed JSON error
+response with a normal HTTP status — identical to before ADR-18, since none
+of that needs progress reporting. Once those checks pass, the response is
+`media_type: application/x-ndjson`, HTTP `200`, body = one JSON object per
+line (`\n`-terminated), each carrying real-time pipeline progress ending in
+exactly one terminal event (`COMPLETED` or `ERROR`). See ADR-18 for the full
+design rationale, the stage-to-pipeline-code mapping, and the error taxonomy.
+
 **Request:**
 ```json
 {
@@ -265,56 +275,109 @@ FR-021).
 }
 ```
 
-**Response 200 (grounded answer):**
+**Request (follow-up turn, with conversation history — ADR-16):**
 ```json
 {
-  "answer": "Employees accrue 15 days of PTO per year [1], which can roll over up to 5 days into the next year [2].",
-  "sources": [
-    {
-      "document_id": "demo-doc-1",
-      "document_name": "Employee Handbook 2026.pdf",
-      "locator": "page 8",
-      "snippet": "Full-time employees accrue 15 days of paid time off annually...",
-      "is_removed": false
-    },
-    {
-      "document_id": "demo-doc-1",
-      "document_name": "Employee Handbook 2026.pdf",
-      "locator": "page 9",
-      "snippet": "Unused PTO may roll over, up to a maximum of 5 days...",
-      "is_removed": false
-    }
+  "knowledge_base_id": "kb_demo",
+  "message": "What about their vacation days?",
+  "conversation_history": [
+    { "role": "user", "content": "Tell me about the engineering team's benefits" },
+    { "role": "assistant", "content": "Engineering employees get a 401(k) match [1] and full health coverage [2]." }
   ]
 }
 ```
+- `conversation_history` (optional, default `[]`): recent prior turns of
+  *this same thread*, each `{ "role": "user" | "assistant", "content": string }`.
+  Sent by the frontend so the backend can resolve a follow-up question
+  (e.g. a pronoun like "their"/"it") into a standalone query before
+  retrieval — see `docs/RAG_PIPELINE.md` Stage 6.5 and ADR-16. The backend
+  does **not** persist this field anywhere; it is used only for the
+  duration of handling this one request, consistent with this project's
+  stateless-backend design (ADR-12) — it is not a new form of server-side
+  chat memory, and does not enable memory across browser sessions/devices
+  (`docs/REQUIREMENTS.md` §12 is unaffected).
+- **Client convention:** the frontend sends the last 3 exchanges (≤6
+  entries) preceding the current `message`, which itself stays a separate
+  top-level field, not part of the array.
+- **Server validation (NFR-006):** hard cap of 8 entries regardless of what
+  is sent; each entry's `content` capped at 2,000 characters, same limit as
+  `message`.
+- **Omitted or empty `conversation_history`** (e.g. the first message of a
+  thread) skips Stage 6.5 entirely — behavior is identical to today's
+  single-field request.
 
-**Response 200 (no-context, FR-022):**
+**Response 200 (streamed NDJSON, grounded answer) — one line per event,
+shown here expanded for readability:**
 ```json
-{
-  "answer": "I don't have enough information in this knowledge base to answer that question.",
-  "sources": []
-}
+{"stage": "SEARCHING"}
+{"stage": "RETRIEVING"}
+{"stage": "GENERATING"}
+{"stage": "VALIDATING"}
+{"stage": "COMPLETED", "answer": "Employees accrue 15 days of PTO per year [1], which can roll over up to 5 days into the next year [2].", "sources": [
+  {
+    "document_id": "demo-doc-1",
+    "document_name": "Employee Handbook 2026.pdf",
+    "locator": "page 8",
+    "snippet": "Full-time employees accrue 15 days of paid time off annually...",
+    "is_removed": false
+  },
+  {
+    "document_id": "demo-doc-1",
+    "document_name": "Employee Handbook 2026.pdf",
+    "locator": "page 9",
+    "snippet": "Unused PTO may roll over, up to a maximum of 5 days...",
+    "is_removed": false
+  }
+]}
+```
+`is_removed` (FR-042, ADR-18): `true` if the cited document's chunks were no
+longer present in the vector store by the time the `VALIDATING` stage ran
+(e.g. deleted via `DELETE /documents/{id}` while this request was in
+flight) — checked for real per distinct cited `document_id`, not a stub.
+
+**Response 200 (streamed NDJSON, no-context, FR-022):** identical stage
+sequence, terminal event:
+```json
+{"stage": "COMPLETED", "answer": "I don't have enough information in this knowledge base to answer that question.", "sources": []}
+```
+
+**Response 200 (streamed NDJSON, mid-stream failure, ADR-18):** the stage
+sequence up to the point of failure, then a terminal `ERROR` event instead of
+`COMPLETED` — HTTP status stays `200` (it was already sent before the
+failure occurred), so retryable-vs-not is carried in the event body itself,
+not the HTTP status:
+```json
+{"stage": "SEARCHING"}
+{"stage": "RETRIEVING"}
+{"stage": "GENERATING"}
+{"stage": "ERROR", "code": "LLM_UNAVAILABLE", "message": "The answer service is temporarily unavailable. Please try again shortly.", "retryable": true}
 ```
 
 **Status codes:**
-- `200` — always, for both grounded and no-context answers (no-context is a
-  valid, expected outcome, not an error)
+- `200` — always for every case above, including a mid-stream `ERROR` event
+  (see ADR-18 — an already-started stream cannot change its HTTP status)
 - `400` — empty/whitespace-only `message`, or missing `knowledge_base_id`
-- `403` — session token does not own the requested `kb_user_*`
-- `404` — unknown `knowledge_base_id`
-- `502` — LLM or vector-DB dependency failed/timed out (FR-054/FR-055)
+  (checked before the stream opens — no body is streamed)
+- `403` — session token does not own the requested `kb_user_*` (checked
+  before the stream opens)
+- `404` — unknown `knowledge_base_id` (checked before the stream opens)
 - `503` — the requested knowledge base has zero ready documents (FR-056),
   distinguished from the empty-*retrieval* case above (which is a normal
-  `200`)
+  streamed `200`/`COMPLETED`) — checked before the stream opens
+- LLM/vector-DB dependency failure/timeout (FR-054/FR-055) is no longer a
+  `502` — it is a mid-stream `{"stage": "ERROR", "code": "LLM_UNAVAILABLE" | "VECTOR_STORE_UNAVAILABLE", "retryable": true}` event (ADR-18), since by
+  the time either dependency is called the stream has already started with
+  HTTP `200`.
 
-**Error response example (502):**
+**Error response example (403, pre-stream):**
 ```json
-{ "error": { "code": "LLM_UNAVAILABLE", "message": "The answer service is temporarily unavailable. Please try again shortly." } }
+{ "error": { "code": "FORBIDDEN_KNOWLEDGE_BASE", "message": "You do not have access to this knowledge base." } }
 ```
 
 **Validation:** `message` length capped (e.g. 2,000 characters) to bound
 prompt size; enforced server-side regardless of any client-side limit
-(NFR-006).
+(NFR-006). `conversation_history`, if present, is capped at 8 entries and
+2,000 characters per entry's `content`, same rationale (ADR-16).
 
 **Rate limiting:** none enforced server-side in V1; Groq's own free-tier
 limits are the practical ceiling (documented in `docs/DEPLOYMENT.md`), and
@@ -339,9 +402,10 @@ the authoritative list, kept in sync with `backend/errors.py` usage):
 | `FORBIDDEN_KNOWLEDGE_BASE` | 403 | `GET /knowledge-bases/{id}/documents`, `GET /documents/{id}/status`, `DELETE /documents/{id}`, `POST /chat` — session does not own the requested `kb_user_*`, or (delete only) the target is `kb_demo` |
 | `KNOWLEDGE_BASE_NOT_FOUND` | 404 | `GET /knowledge-bases/{id}/documents`, `POST /chat` |
 | `DOCUMENT_NOT_FOUND` | 404 | `GET /documents/{id}/status`, `DELETE /documents/{id}` |
-| `EMPTY_KNOWLEDGE_BASE` | 503 | `POST /chat` — target KB has zero `READY` documents (FR-056) |
-| `LLM_UNAVAILABLE` | 502 | `POST /chat` — Groq/vector-DB dependency failure (lands with real retrieval in Phase 10-12; not reachable in the Phase 3 stub) |
-| `INTERNAL_ERROR` | 500 | Any endpoint — unexpected server error, sanitized per `docs/SECURITY.md` (Error Leakage); no endpoint above documents a deliberate 500, this is the global fallback |
+| `EMPTY_KNOWLEDGE_BASE` | 503 | `POST /chat` — target KB has zero `READY` documents (FR-056); checked before the stream opens |
+| `LLM_UNAVAILABLE` | 200 + mid-stream `{"stage": "ERROR", "retryable": true}` (ADR-18) | `POST /chat` — Groq dependency failure (FR-054). No longer a `502` — the stream has already started by the time Groq is called, so the HTTP status cannot change; the frontend maps this event to the exact same retryable-error UI a `502` used to (see ADR-18) |
+| `VECTOR_STORE_UNAVAILABLE` | 200 + mid-stream `{"stage": "ERROR", "retryable": true}` (ADR-18) | `POST /chat` — embedding/retrieval/rerank stage failure, i.e. Qdrant unreachable after its own internal retries (FR-055), distinguished from `LLM_UNAVAILABLE` per FR-055's wording. New in ADR-18 — previously fell through uncaught to `INTERNAL_ERROR`/non-retryable, which did not satisfy FR-055 |
+| `INTERNAL_ERROR` | 500 (pre-stream) or 200 + mid-stream `{"stage": "ERROR", "retryable": false}` (ADR-18, once `/chat` has started streaming) | Any endpoint — unexpected server error, sanitized per `docs/SECURITY.md` (Error Leakage); the global fallback for anything not covered by a more specific code above |
 
 ## Cross-Cutting Rules
 

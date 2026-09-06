@@ -1,7 +1,10 @@
 """FastAPI app entry point. Route implementations: docs/API.md; error
 shape: docs/API.md / docs/SECURITY.md (Error Leakage)."""
 
+import asyncio
+import contextlib
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,10 +14,63 @@ from fastapi.responses import JSONResponse
 from api import chat, documents, health, knowledge_bases
 from config import settings
 from errors import ApiError
+from retrieval import vector_store
+from store import (
+    DEMO_KB_ID,
+    SESSION_IDLE_TTL_SECONDS,
+    SESSION_SWEEP_INTERVAL_SECONDS,
+    get_idle_session_tokens,
+    reap_session,
+)
 
 logger = logging.getLogger("backend")
 
-app = FastAPI(title="RAG Chatbot Backend")
+
+def _sweep_idle_sessions() -> None:
+    """One idle-session reaper pass (product decision: abandoned "Your
+    Documents" data must not accumulate forever - POC scope, see
+    store.py's SESSION_IDLE_TTL_SECONDS comment). Synchronous by design -
+    every call here (store.py's dict ops, Qdrant) is blocking - so this
+    must always be invoked via asyncio.to_thread from the async reaper
+    loop, the same way FastAPI's own run_in_threadpool keeps sync route
+    handlers off the event loop.
+    """
+    for token in get_idle_session_tokens(SESSION_IDLE_TTL_SECONDS):
+        kb_id = reap_session(token)
+        if kb_id is None:
+            continue  # session never uploaded anything - nothing else to clean up
+        if kb_id == DEMO_KB_ID:
+            # Structurally impossible - reap_session asserts this itself -
+            # but never risk the permanent demo KB on a bug here.
+            logger.error("Idle-session reaper refused to delete vectors for the demo KB.")
+            continue
+        try:
+            vector_store.delete_knowledge_base_vectors(kb_id)
+        except Exception:
+            logger.exception("Failed to delete Qdrant vectors for reaped KB %s", kb_id)
+
+
+async def _idle_session_reaper_loop() -> None:
+    while True:
+        await asyncio.sleep(SESSION_SWEEP_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(_sweep_idle_sessions)
+        except Exception:
+            logger.exception("Idle-session reaper sweep failed")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    reaper_task = asyncio.create_task(_idle_session_reaper_loop())
+    try:
+        yield
+    finally:
+        reaper_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reaper_task
+
+
+app = FastAPI(title="RAG Chatbot Backend", lifespan=lifespan)
 
 # Defense-in-depth beyond the per-file 5MB check (docs/API.md, docs/SECURITY.md
 # Excessive File Size): rejects an oversized request based on the

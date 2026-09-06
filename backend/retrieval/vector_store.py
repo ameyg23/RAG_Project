@@ -24,7 +24,7 @@ from config import settings
 from ingestion.chunk import DocumentChunk
 
 COLLECTION_NAME = "rag_chunks"
-VECTOR_SIZE = 384  # ADR-06: sentence-transformers/all-MiniLM-L6-v2 output dim
+VECTOR_SIZE = 384  # ADR-06: BAAI/bge-small-en-v1.5 output dim
 
 # Transient network/DNS blips connecting to Qdrant Cloud have been observed
 # repeatedly during this project's development (always resolving on a quick
@@ -126,6 +126,24 @@ def ensure_collection() -> None:
         )
 
 
+def drop_collection() -> None:
+    """Explicitly delete the collection so a subsequent ensure_collection()
+    recreates it from scratch.
+
+    One-time migration helper: needed whenever the embedding *model*
+    changes even if VECTOR_SIZE doesn't (e.g. an unchanged 384 dims across
+    two different models). ensure_collection()'s idempotent create-if-
+    missing check only ever looks at whether the collection exists, not
+    what embedding space its vectors were written in - it cannot detect a
+    model swap by dimension alone, and would otherwise silently leave old
+    vectors mixed with new ones in the same collection, corrupting
+    retrieval rather than erroring. Callers must re-ingest everything
+    (e.g. scripts/seed_demo_kb.py) after calling this.
+    """
+    client = get_client()
+    _with_retry(lambda: client.delete_collection(COLLECTION_NAME))
+
+
 def _point_id(chunk_id: str) -> str:
     """Qdrant point IDs must be an unsigned int or UUID; chunk_id is an
     arbitrary string, so map it deterministically — upserting the same
@@ -201,6 +219,46 @@ def delete_document(document_id: str, *, knowledge_base_id: str) -> None:
                         FieldCondition(
                             key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
                         ),
+                    ]
+                )
+            ),
+        )
+    )
+
+
+def delete_knowledge_base_vectors(knowledge_base_id: str) -> None:
+    """Delete every chunk vector for an entire knowledge base, across all of
+    its documents, keyed only by knowledge_base_id - used exclusively by the
+    idle-session reaper (backend/main.py) to purge an abandoned user KB's
+    vectors in one call, without needing each document_id individually.
+    This is a narrower per-KB delete, not drop_collection()'s "wipe the
+    whole shared collection" (that one's a migration helper for an
+    embedding-model swap; the two aren't related).
+
+    Must NEVER be called with DEMO_KB_ID - that KB is permanent and shared
+    by every visitor. The assertion below is a defense-in-depth guard: a
+    bug here wiping the demo KB would be catastrophic and not easily
+    recoverable (would require re-running scripts/seed_demo_kb.py).
+    """
+    if not knowledge_base_id:
+        raise ValueError("knowledge_base_id must not be empty (ADR-14, NFR-004)")
+
+    from store import DEMO_KB_ID  # local import: avoids a store<->vector_store cycle
+
+    assert knowledge_base_id != DEMO_KB_ID, (
+        "delete_knowledge_base_vectors must never target the permanent demo KB"
+    )
+
+    ensure_collection()
+    _with_retry(
+        lambda: get_client().delete(
+            COLLECTION_NAME,
+            points_selector=FilterSelector(
+                filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="knowledge_base_id", match=MatchValue(value=knowledge_base_id)
+                        )
                     ]
                 )
             ),

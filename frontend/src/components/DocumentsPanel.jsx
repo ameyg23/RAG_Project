@@ -1,18 +1,41 @@
-import { useEffect, useRef, useState } from 'react'
 import {
-  ApiError,
-  deleteDocument,
-  getDocumentStatus,
-  listDocuments,
-  uploadDocuments,
-} from '../api/client'
+  CheckCircle2,
+  Clock,
+  FileText,
+  Loader2,
+  Trash2,
+  UploadCloud,
+  XCircle,
+} from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ApiError, listDocuments } from '../api/client'
 import { DEMO_KB_ID } from '../constants'
 import { useSession } from '../context/SessionContext'
 
 const MAX_FILES = 5
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'txt', 'md']
-const POLL_INTERVAL_MS = 2000
+
+// Labels intentionally keep the raw enum text (not friendlier casing) — the
+// status model/values are untouched per decision #8, this is presentation
+// (pill + icon) layered on top of the same four enum strings.
+const STATUS_META = {
+  UPLOADED: { label: 'UPLOADED', icon: Clock, className: 'status-pill--uploaded' },
+  PROCESSING: { label: 'PROCESSING', icon: Loader2, className: 'status-pill--processing' },
+  READY: { label: 'READY', icon: CheckCircle2, className: 'status-pill--ready' },
+  FAILED: { label: 'FAILED', icon: XCircle, className: 'status-pill--failed' },
+}
+
+function StatusPill({ status }) {
+  const meta = STATUS_META[status] ?? { label: status, icon: Clock, className: '' }
+  const Icon = meta.icon
+  return (
+    <span className={`status-pill ${meta.className}`}>
+      <Icon size={13} aria-hidden="true" className={status === 'PROCESSING' ? 'spin' : undefined} />
+      {meta.label}
+    </span>
+  )
+}
 
 function fileExtension(filename) {
   return filename.split('.').pop()?.toLowerCase() ?? ''
@@ -33,7 +56,7 @@ function validateFiles(files) {
   return null
 }
 
-function DemoDocumentsView() {
+function DemoDocumentsView({ compact }) {
   const [documents, setDocuments] = useState([])
   const [isLoading, setIsLoading] = useState(true)
 
@@ -57,15 +80,24 @@ function DemoDocumentsView() {
 
   return (
     <div className="documents-panel documents-panel--demo">
-      <span className="kb-badge kb-badge--demo">Demo</span>
-      <p className="documents-panel__empty">
-        This knowledge base is pre-loaded with demo content and is always ready to answer
-        questions.
-      </p>
+      {!compact && (
+        <>
+          <h3 className="documents-panel__title">
+            Demo Documents{!isLoading && documents.length > 0 ? ` (${documents.length})` : ''}
+          </h3>
+          <p className="documents-panel__empty">
+            This knowledge base is pre-loaded with demo content and is always ready to answer
+            questions.
+          </p>
+        </>
+      )}
       {!isLoading && documents.length > 0 && (
         <ul className="documents-panel__list documents-panel__list--readonly">
           {documents.map((doc) => (
-            <li key={doc.document_id}>{doc.filename}</li>
+            <li key={doc.document_id}>
+              <FileText size={16} aria-hidden="true" className="documents-panel__file-icon" />
+              <span className="documents-panel__filename">{doc.filename}</span>
+            </li>
           ))}
         </ul>
       )}
@@ -73,51 +105,44 @@ function DemoDocumentsView() {
   )
 }
 
-function UserDocumentsView() {
-  const { setSessionToken, refetchKnowledgeBases } = useSession()
+function UserDocumentsView({ compact }) {
+  const { userDocuments, uploadUserDocuments, deleteUserDocument } = useSession()
 
   const [selectedFiles, setSelectedFiles] = useState([])
   const [validationError, setValidationError] = useState(null)
   const [uploadError, setUploadError] = useState(null)
   const [isUploading, setIsUploading] = useState(false)
-  const [documents, setDocuments] = useState([])
-  const pollTimersRef = useRef({})
+  const [isDragActive, setIsDragActive] = useState(false)
+  const fileInputRef = useRef(null)
 
-  useEffect(() => {
-    const timers = pollTimersRef.current
-    return () => {
-      Object.values(timers).forEach(clearTimeout)
-    }
-  }, [])
-
-  function pollStatus(documentId) {
-    getDocumentStatus(documentId)
-      .then((result) => {
-        setDocuments((prev) =>
-          prev.map((doc) =>
-            doc.document_id === documentId
-              ? { ...doc, status: result.status, failure_reason: result.failure_reason }
-              : doc
-          )
-        )
-        if (result.status === 'READY' || result.status === 'FAILED') {
-          refetchKnowledgeBases()
-          return
-        }
-        pollTimersRef.current[documentId] = setTimeout(() => pollStatus(documentId), POLL_INTERVAL_MS)
-      })
-      .catch(() => {
-        // Stop polling silently — the badge simply stops updating live,
-        // not a fatal UI error (docs/UI_UX.md doesn't define a poll-failure
-        // state distinct from the existing status badges).
-      })
-  }
-
-  function handleFileChange(event) {
-    const files = Array.from(event.target.files ?? [])
+  // Shared by both the native file input and drag-and-drop — one validation/
+  // selection code path regardless of how the files arrived.
+  function handleFilesSelected(files) {
     setSelectedFiles(files)
     setValidationError(validateFiles(files))
     setUploadError(null)
+  }
+
+  function handleFileChange(event) {
+    handleFilesSelected(Array.from(event.target.files ?? []))
+  }
+
+  function handleDragOver(event) {
+    event.preventDefault()
+    setIsDragActive(true)
+  }
+
+  function handleDragLeave(event) {
+    event.preventDefault()
+    setIsDragActive(false)
+  }
+
+  function handleDrop(event) {
+    event.preventDefault()
+    setIsDragActive(false)
+    const files = Array.from(event.dataTransfer?.files ?? [])
+    if (files.length === 0) return
+    handleFilesSelected(files)
   }
 
   async function handleSubmit(event) {
@@ -130,12 +155,8 @@ function UserDocumentsView() {
     setIsUploading(true)
     setUploadError(null)
     try {
-      const result = await uploadDocuments(selectedFiles)
-      if (result.session_token) setSessionToken(result.session_token)
-      setDocuments((prev) => [...prev, ...result.documents])
+      await uploadUserDocuments(selectedFiles)
       setSelectedFiles([])
-      result.documents.forEach((doc) => pollStatus(doc.document_id))
-      refetchKnowledgeBases()
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -149,22 +170,22 @@ function UserDocumentsView() {
 
   async function handleDelete(documentId) {
     try {
-      await deleteDocument(documentId)
-      clearTimeout(pollTimersRef.current[documentId])
-      delete pollTimersRef.current[documentId]
-      setDocuments((prev) => prev.filter((doc) => doc.document_id !== documentId))
-      refetchKnowledgeBases()
+      await deleteUserDocument(documentId)
     } catch {
       // Non-fatal for this simple UI — the document stays listed if delete
       // fails; the user can retry the delete action.
     }
   }
 
-  const hasDocuments = documents.length > 0
+  const hasDocuments = userDocuments.length > 0
 
   return (
     <div className="documents-panel documents-panel--user">
-      <span className="kb-badge kb-badge--user">Your documents</span>
+      {!compact && (
+        <h3 className="documents-panel__title">
+          Your Documents{hasDocuments ? ` (${userDocuments.length})` : ''}
+        </h3>
+      )}
 
       {!hasDocuments && (
         <p className="documents-panel__empty">No documents yet. Upload one to get started.</p>
@@ -172,53 +193,84 @@ function UserDocumentsView() {
 
       {hasDocuments && (
         <ul className="documents-panel__list">
-          {documents.map((doc) => (
+          {userDocuments.map((doc) => (
             <li key={doc.document_id}>
-              {doc.filename} — <span className="status-badge">{doc.status}</span>
-              {doc.status === 'FAILED' && doc.failure_reason && (
-                <p className="documents-panel__failure-reason">{doc.failure_reason}</p>
-              )}
+              <FileText size={16} aria-hidden="true" className="documents-panel__file-icon" />
+              <span className="documents-panel__filename">{doc.filename}</span>
+              <StatusPill status={doc.status} />
               <button
                 type="button"
                 className="documents-panel__delete"
                 aria-label={`Delete ${doc.filename}`}
                 onClick={() => handleDelete(doc.document_id)}
               >
-                Delete
+                <Trash2 size={14} aria-hidden="true" />
               </button>
+              {doc.status === 'FAILED' && doc.failure_reason && (
+                <p className="documents-panel__failure-reason">{doc.failure_reason}</p>
+              )}
             </li>
           ))}
         </ul>
       )}
 
-      <form className="documents-panel__upload" onSubmit={handleSubmit}>
-        <input
-          type="file"
-          multiple
-          accept=".pdf,.docx,.txt,.md"
-          onChange={handleFileChange}
-          aria-label="Upload documents"
-        />
-        <p className="documents-panel__hint">Files are re-checked on upload.</p>
-        {selectedFiles.length > 0 && (
-          <p className="documents-panel__count">
-            {selectedFiles.length} of {MAX_FILES} files selected
-          </p>
-        )}
-        {validationError && <p className="documents-panel__error">{validationError}</p>}
-        {uploadError && <p className="documents-panel__error">{uploadError}</p>}
-        <button
-          type="submit"
-          disabled={selectedFiles.length === 0 || Boolean(validationError) || isUploading}
-        >
-          {isUploading ? 'Uploading…' : 'Upload'}
-        </button>
-      </form>
+      {!compact && (
+        <form className="documents-panel__upload" onSubmit={handleSubmit}>
+          <h4 className="documents-panel__upload-title">Upload your documents</h4>
+          <div
+            className={`documents-panel__dropzone${isDragActive ? ' is-drag-active' : ''}`}
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            <UploadCloud size={28} aria-hidden="true" className="documents-panel__dropzone-icon" />
+            <p className="documents-panel__dropzone-text">Drag &amp; drop your documents here</p>
+            <button
+              type="button"
+              className="documents-panel__browse"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Browse files
+            </button>
+            <p className="documents-panel__dropzone-hint">
+              PDF, DOCX, TXT, MD · Up to {MAX_FILES} files · Up to 5MB each
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.docx,.txt,.md"
+              onChange={handleFileChange}
+              aria-label="Upload documents"
+              className="documents-panel__file-input"
+            />
+          </div>
+          {selectedFiles.length > 0 && (
+            <p className="documents-panel__count">
+              {selectedFiles.length} of {MAX_FILES} files selected
+            </p>
+          )}
+          {validationError && <p className="documents-panel__error">{validationError}</p>}
+          {uploadError && <p className="documents-panel__error">{uploadError}</p>}
+          <button
+            type="submit"
+            className="documents-panel__submit"
+            disabled={selectedFiles.length === 0 || Boolean(validationError) || isUploading}
+          >
+            {isUploading ? 'Uploading…' : 'Upload'}
+          </button>
+        </form>
+      )}
     </div>
   )
 }
 
-export default function DocumentsPanel() {
+export default function DocumentsPanel({ compact = false }) {
   const { activeKnowledgeBaseId } = useSession()
-  return activeKnowledgeBaseId === DEMO_KB_ID ? <DemoDocumentsView /> : <UserDocumentsView />
+  return activeKnowledgeBaseId === DEMO_KB_ID ? (
+    <DemoDocumentsView compact={compact} />
+  ) : (
+    <UserDocumentsView compact={compact} />
+  )
 }

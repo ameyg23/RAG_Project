@@ -75,6 +75,12 @@ def load_groq_api_key() -> str:
 
 
 def call_chat(client: httpx.Client, knowledge_base_id: str, message: str) -> tuple[dict, float]:
+    """POST /chat now streams NDJSON (ADR-18) rather than a single JSON body
+    - one `{"stage": ...}` object per line, ending in exactly one terminal
+    `COMPLETED` or `ERROR` event. This script only cares about the final
+    event's `answer`/`sources` payload for its existing metric calculations,
+    identical in shape to the old single-response body - just extracted from
+    the last line instead of the whole body."""
     start = time.perf_counter()
     response = client.post(
         "/chat",
@@ -82,7 +88,25 @@ def call_chat(client: httpx.Client, knowledge_base_id: str, message: str) -> tup
     )
     elapsed = time.perf_counter() - start
     response.raise_for_status()
-    return response.json(), elapsed
+
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError(f"POST /chat returned an empty NDJSON stream for message: {message!r}")
+    events = [json.loads(line) for line in lines]
+
+    final = events[-1]
+    if final.get("stage") == "ERROR":
+        raise RuntimeError(
+            f"POST /chat ended in a mid-stream ERROR event for message {message!r}: "
+            f"code={final.get('code')} message={final.get('message')!r}"
+        )
+    if final.get("stage") != "COMPLETED":
+        raise RuntimeError(
+            f"POST /chat's NDJSON stream did not end in a COMPLETED event for message "
+            f"{message!r}: last event was {final!r}"
+        )
+
+    return {"answer": final["answer"], "sources": final["sources"]}, elapsed
 
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)

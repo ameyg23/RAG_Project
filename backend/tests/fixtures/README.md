@@ -14,6 +14,8 @@ Committed as static binary/text files — the test suite only reads them.
 | `corrupted.pdf` | malformed/truncated PDF bytes — triggers `CorruptedDocumentError` |
 | `corrupted.docx` | not a real zip file — triggers `CorruptedDocumentError` |
 | `invalid_encoding.txt` | not valid UTF-8 — triggers `CorruptedDocumentError` via `UnicodeDecodeError` |
+| `two_column_resume.pdf` | synthetic sidebar+main-column PDF, used by `test_extract.py` to verify `extraction_mode="layout"` handles multi-column reading order |
+| `synthetic_resume.md` | synthetic single-column resume (short fact-list content), used by `test_retriever.py` as a regression guard for the embedding-model threshold calibration (`retriever.py`'s `MIN_SIMILARITY_SCORE` docstring) |
 
 ## Regenerating
 

@@ -113,8 +113,8 @@ rather than trusted purely from this map).
 ## 6. ChatMessage
 
 **Decision: no server-side ChatMessage record exists in V1.** Chat history
-is a client-only concept (React state / `localStorage`), never transmitted
-to or stored by the backend beyond the single in-flight request/response.
+is a client-only concept (React state / `localStorage`), never *stored* by
+the backend beyond the single in-flight request/response.
 
 | Field (client-side only) | Type | Notes |
 |---|---|---|
@@ -124,6 +124,19 @@ to or stored by the backend beyond the single in-flight request/response.
 | `timestamp` | datetime | Client-generated, display only |
 
 **Purpose:** UI rendering only (`docs/UI_UX.md`).
+
+**Amendment (ADR-16, query rewriting):** "never transmitted to... the
+backend" above is narrowed, not overturned. As of ADR-16, the frontend *does*
+transmit a short window of recent `ChatMessage`-shaped turns
+(`{role, content}` only — never `sources`/`timestamp`) to the backend, as
+the optional `conversation_history` field on a single `POST /chat` request
+(`docs/API.md`). This remains a **transmission, not a persistence, change**:
+the backend reads this field to run one query-rewriting call
+(`docs/RAG_PIPELINE.md` Stage 6.5) and discards it at the end of that
+request — no ChatMessage record is created, stored, or made queryable
+server-side. The distinction that matters for `docs/REQUIREMENTS.md` §12
+(no cross-session/cross-device conversation memory) is persistence, not
+transmission, and persistence is unchanged: still none.
 
 ## 7. SourceReference
 

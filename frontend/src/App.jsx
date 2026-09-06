@@ -1,32 +1,45 @@
+import { useState } from 'react'
+import AboutView from './components/AboutView'
 import ChatPanel from './components/ChatPanel'
-import DocumentsPanel from './components/DocumentsPanel'
-import KnowledgeBaseSelector from './components/KnowledgeBaseSelector'
+import DocumentsView from './components/DocumentsView'
+import Navbar from './components/Navbar'
+import Sidebar from './components/Sidebar'
 import { SessionProvider } from './context/SessionContext'
+import { ThemeProvider } from './context/ThemeContext'
+import { useView, ViewProvider, VIEWS } from './context/ViewContext'
 import './App.css'
 
+function MainContent() {
+  const { view } = useView()
+  if (view === VIEWS.DOCUMENTS) return <DocumentsView />
+  if (view === VIEWS.ABOUT) return <AboutView />
+  return <ChatPanel />
+}
+
 function AppShell() {
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <h1>RAG Chatbot</h1>
-        <p className="app-header__tagline">
-          Ask questions about a demo document set, or upload your own and chat with it — every
-          answer is backed by a source citation.
-        </p>
-        <KnowledgeBaseSelector />
-      </header>
-      <main className="app-main">
-        <DocumentsPanel />
-        <ChatPanel />
-      </main>
+      <Navbar onToggleSidebar={() => setIsSidebarOpen((open) => !open)} />
+      <div className="app-body">
+        <Sidebar isOpen={isSidebarOpen} onClose={() => setIsSidebarOpen(false)} />
+        <main className="app-main">
+          <MainContent />
+        </main>
+      </div>
     </div>
   )
 }
 
 export default function App() {
   return (
-    <SessionProvider>
-      <AppShell />
-    </SessionProvider>
+    <ThemeProvider>
+      <ViewProvider>
+        <SessionProvider>
+          <AppShell />
+        </SessionProvider>
+      </ViewProvider>
+    </ThemeProvider>
   )
 }

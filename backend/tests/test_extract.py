@@ -22,6 +22,38 @@ def test_pdf_happy_path_per_page():
     assert "Customer satisfaction" in units[1].text
 
 
+def test_pdf_multi_column_layout_preserves_reading_order():
+    # Regression test for a real-world failure mode: a "Chrome print-to-PDF"
+    # style resume with a sidebar (Contact/Skills) column beside a main
+    # (Experience/Education) column, whose content stream interleaves the
+    # two columns line-by-line. pypdf/LangChain's default "plain" extraction
+    # mode has no column awareness and reproduces that interleaving in the
+    # extracted text (sidebar line, main-column line, sidebar line, ...),
+    # scrambling reading order even though no individual line is corrupted.
+    # extract_and_clean must use a layout-aware mode so each column's lines
+    # stay together and in order.
+    units = extract_and_clean(str(FIXTURES / "two_column_resume.pdf"), "pdf")
+    assert len(units) == 1
+    text = units[0].text
+
+    main_order = [
+        "Experience",
+        "Senior Backend Engineer, Nimbus Data Corp (2022-2026)",
+        "Software Engineer, Fenwick Analytics (2019-2022)",
+        "Education",
+    ]
+    positions = [text.index(s) for s in main_order]
+    assert positions == sorted(positions), (
+        f"Main-column lines are out of order in extracted text:\n{text!r}"
+    )
+
+    side_order = ["Contact", "Skills", "Python", "Kubernetes"]
+    side_positions = [text.index(s) for s in side_order]
+    assert side_positions == sorted(side_positions), (
+        f"Sidebar-column lines are out of order in extracted text:\n{text!r}"
+    )
+
+
 def test_docx_happy_path():
     units = extract_and_clean(str(FIXTURES / "sample.docx"), "docx")
     assert len(units) == 1

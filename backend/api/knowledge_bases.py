@@ -21,6 +21,7 @@ from store import (
     known_kb_id,
     list_documents_for_kb,
     session_owns_kb,
+    touch_session_activity,
 )
 
 router = APIRouter()
@@ -92,6 +93,7 @@ def demo_document_summary_by_id(document_id: str) -> dict | None:
 
 @router.get("/knowledge-bases", response_model=KnowledgeBasesResponse)
 def list_knowledge_bases(x_session_token: str | None = Header(default=None)):
+    touch_session_activity(x_session_token)
     demo = KnowledgeBaseSummary(
         knowledge_base_id=DEMO_KB_ID,
         kind="demo",
@@ -119,6 +121,7 @@ def list_knowledge_bases(x_session_token: str | None = Header(default=None)):
 
 @router.get("/knowledge-bases/{knowledge_base_id}/documents", response_model=DocumentsListResponse)
 def list_kb_documents(knowledge_base_id: str, x_session_token: str | None = Header(default=None)):
+    touch_session_activity(x_session_token)
     if not known_kb_id(knowledge_base_id):
         raise ApiError(404, "KNOWLEDGE_BASE_NOT_FOUND", "That knowledge base does not exist.")
 

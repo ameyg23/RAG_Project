@@ -76,7 +76,10 @@ backend/
     pipeline.py             # orchestrates extract→chunk→embed→upsert, BackgroundTasks (ADR-13)
   retrieval/
     vector_store.py         # Qdrant client adapter (ADR-07, ADR-14)
-    retriever.py             # similarity search + KB filter + top-K
+    query_rewrite.py         # Stage 6.5: Groq call resolving follow-ups against
+                              # client-supplied history, not persisted (ADR-16)
+    retriever.py             # similarity search (widened candidate pool) + KB filter
+    reranker.py               # Stage 8.5: local cross-encoder rerank (ADR-17)
     generation.py             # prompt construction + Groq call (ADR-08)
   models/
     schemas.py               # Pydantic request/response models (source of docs/API.md)
@@ -130,28 +133,57 @@ sequenceDiagram
 
 ## 6. Query Architecture
 
+*(Updated for ADR-16/ADR-17 — query rewriting and reranking — and ADR-18 —
+streamed progress reporting. The pipeline logic below is unchanged from
+ADR-16/17; ADR-18 only adds NDJSON progress events (`A-->>U` lines) at each
+stage boundary.)*
+
 ```mermaid
 sequenceDiagram
     participant U as Browser
     participant A as FastAPI /chat
-    participant M as Embedding (MiniLM)
+    participant R as Query Rewrite (Groq)
+    participant M as Embedding (BGE)
     participant Q as Qdrant
+    participant X as Reranker (cross-encoder)
     participant L as Groq LLM
 
-    U->>A: POST {knowledge_base_id, message}
-    A->>M: embed(message)
-    M->>Q: search(vector, filter: knowledge_base_id, top_k)
-    Q-->>A: top-K chunks + scores + metadata
-    alt best score below threshold
-        A-->>U: fixed "not enough information" response (FR-022)
+    U->>A: POST {knowledge_base_id, message, conversation_history?} (pre-stream checks pass — FR-056/403/404/400 handled as plain JSON before this point, ADR-18)
+    A-->>U: stream opens, 200
+    A-->>U: {"stage": "SEARCHING"}
+    alt conversation_history non-empty
+        A->>R: rewrite(message, conversation_history)
+        R-->>A: rewritten_query (or message unchanged on failure)
+    else first turn
+        A->>A: rewritten_query = message
+    end
+    A->>M: embed(rewritten_query)
+    M->>Q: search(vector, filter: knowledge_base_id, top_k=20)
+    Q-->>A: up to 20 candidate chunks + cosine scores (pre-filtered by MIN_SIMILARITY_SCORE)
+    A-->>U: {"stage": "RETRIEVING"}
+    A->>X: rerank(rewritten_query, candidates)
+    X-->>A: candidates re-scored + re-sorted
+    A->>A: threshold on MIN_RERANK_SCORE, cap at top_n
+    A-->>U: {"stage": "GENERATING"}
+    alt best rerank score below MIN_RERANK_SCORE
+        A->>A: NO_CONTEXT_RESPONSE, Groq never called (FR-022)
     else
-        A->>A: build grounded prompt from chunks
+        A->>A: build grounded prompt from top-N reranked chunks, question=rewritten_query
         A->>L: generate(prompt)
         L-->>A: answer text
-        A->>A: derive citations from chunks used in prompt (FR-041)
-        A-->>U: {answer, sources[]}
     end
+    A-->>U: {"stage": "VALIDATING"}
+    A->>A: derive citations from chunks used in prompt (FR-041)
+    A->>Q: count_chunks_for_document(doc_id) per distinct cited document (FR-042, ADR-18)
+    Q-->>A: chunk counts -> is_removed per source
+    A-->>U: {"stage": "COMPLETED", "answer": ..., "sources": [...]}
 ```
+
+On any dependency failure (Groq or Qdrant) after the stream has opened, `A`
+emits `{"stage": "ERROR", "code", "message", "retryable"}` instead of the
+next stage/`COMPLETED` event and ends the stream there — see ADR-18 for the
+full error taxonomy (HTTP status stays `200`; retryable-vs-not travels in
+the event body).
 
 ## 7. Knowledge-Base Architecture
 
@@ -174,7 +206,7 @@ sequenceDiagram
 | Raw uploaded file | Backend temp directory | Transient — deleted after ingestion (ADR-11) | Never served back to client |
 | In-flight processing status | Backend process memory | Transient — lost on backend restart | Acceptable per ADR-12 |
 | Session token / active KB | Browser `localStorage` | Persistent client-side only | No server-side session store |
-| Chat message history | Browser memory/`localStorage` | Persistent client-side only | Never sent to a database (FR-023) |
+| Chat message history | Browser memory/`localStorage` | Persistent client-side only | Never sent to a database (FR-023). A short recent window IS now transmitted per-request as `conversation_history` (ADR-16) for query rewriting, but the backend discards it after that one request — transmission, not persistence (see `docs/DATA_MODEL.md` §6 amendment) |
 
 ## 9. Deployment Architecture
 

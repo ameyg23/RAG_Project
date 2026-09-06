@@ -5,12 +5,13 @@ import pytest
 from qdrant_client import QdrantClient
 
 from ingestion.chunk import DocumentChunk, chunk_document
-from ingestion.embed import embed_texts
+from ingestion.embed import embed_query, embed_texts
 from ingestion.extract import extract_and_clean
 from retrieval import vector_store
-from retrieval.retriever import RetrievedChunk, build_context, retrieve
+from retrieval.retriever import RetrievedChunk, apply_rerank_threshold, build_context, retrieve
 
 DEMO_CONTENT = Path(__file__).parent.parent / "demo_content"
+FIXTURES = Path(__file__).parent / "fixtures"
 DEMO_FILES = [
     "01_employee_handbook.md",
     "02_product_faq.md",
@@ -74,13 +75,14 @@ def test_retrieval_hit_rate_on_real_suggested_questions():
     # This is Phase 9's actual Definition of Done: every real, pre-verified
     # answerable question's expected source document survives both top-K
     # and the similarity threshold. Calibration (see retriever.py docstring)
-    # confirmed real scores land 0.48-0.84, comfortably above 0.35 — this
-    # test is the regression guard for that finding.
+    # confirmed real scores land 0.73-0.89, comfortably above the current
+    # 0.45 MIN_SIMILARITY_SCORE — this test is the regression guard for
+    # that finding.
     _ingest_all_demo_content()
     questions = json.loads((DEMO_CONTENT / "suggested_questions.json").read_text())
 
     for q in questions:
-        (query_vector,) = embed_texts([q["question"]])
+        query_vector = embed_query(q["question"])
         results = retrieve(query_vector, knowledge_base_id="kb_demo")
         matched_docs = {r.document_name for r in results}
         assert q["source_document"] in matched_docs, (
@@ -91,7 +93,7 @@ def test_retrieval_hit_rate_on_real_suggested_questions():
 
 def test_threshold_excludes_unrelated_control_question():
     _ingest_all_demo_content()
-    (query_vector,) = embed_texts(["What is the capital of France?"])
+    query_vector = embed_query("What is the capital of France?")
     results = retrieve(query_vector, knowledge_base_id="kb_demo")
     assert results == []
 
@@ -101,8 +103,9 @@ def test_threshold_excludes_all_results_from_kb_seeded_with_only_offtopic_conten
     # off-topic content relative to the probe question (distinct from
     # test_threshold_excludes_unrelated_control_question above, which reuses
     # the demo KB's genuinely relevant content alongside an unrelated
-    # question) - this proves the 0.35 cutoff excludes weak matches even
-    # when the KB is nonempty, not just when it's empty of everything.
+    # question) - this proves the current MIN_SIMILARITY_SCORE cutoff
+    # excludes weak matches even when the KB is nonempty, not just when
+    # it's empty of everything.
     offtopic_text = (
         "Bring an umbrella if it looks like rain; the garden gnomes prefer "
         "shade to direct sunlight during the hottest part of the afternoon."
@@ -119,10 +122,34 @@ def test_threshold_excludes_all_results_from_kb_seeded_with_only_offtopic_conten
     )
     vector_store.upsert_chunks([chunk], [vector])
 
-    (query_vector,) = embed_texts(["How many days of paid time off do I get per year?"])
+    query_vector = embed_query("How many days of paid time off do I get per year?")
     results = retrieve(query_vector, knowledge_base_id="kb_offtopic")
 
     assert results == []
+
+
+def test_retrieval_succeeds_on_short_fact_list_document():
+    # Regression guard for the bug that motivated the all-MiniLM-L6-v2 ->
+    # BAAI/bge-small-en-v1.5 swap: a short fact-list document (a resume)
+    # scored 0.07-0.24 against natural questions under MiniLM - always
+    # below MIN_SIMILARITY_SCORE, producing a grounded-refusal for a READY
+    # document with genuinely relevant content. Confirms the new
+    # model/threshold actually retrieves such content instead.
+    units = extract_and_clean(str(FIXTURES / "synthetic_resume.md"), "md")
+    chunks = chunk_document(
+        units,
+        document_id="doc-resume",
+        knowledge_base_id="kb_resume",
+        document_name="synthetic_resume.md",
+    )
+    vectors = embed_texts([c.text for c in chunks])
+    vector_store.upsert_chunks(chunks, vectors)
+
+    query_vector = embed_query("What programming languages does this person know?")
+    results = retrieve(query_vector, knowledge_base_id="kb_resume")
+
+    assert results
+    assert any("Python" in r.text for r in results)
 
 
 def test_retrieve_requires_knowledge_base_id():
@@ -166,3 +193,41 @@ def test_retrieve_respects_knowledge_base_isolation():
 
     assert results_a and all(r.knowledge_base_id == "kb_a" for r in results_a)
     assert results_b and all(r.knowledge_base_id == "kb_b" for r in results_b)
+
+
+# --- Stage 9 (modified, ADR-17): apply_rerank_threshold ---------------------
+
+
+def test_apply_rerank_threshold_excludes_below_threshold_chunks():
+    chunks = [_make_chunk(0, score=5.0), _make_chunk(1, score=-2.0), _make_chunk(2, score=1.0)]
+    result = apply_rerank_threshold(chunks, min_rerank_score=0.0, top_n=5)
+    assert [c.chunk_id for c in result] == ["doc_0", "doc_2"]
+
+
+def test_apply_rerank_threshold_caps_at_top_n():
+    chunks = [_make_chunk(i, score=10.0 - i) for i in range(8)]
+    result = apply_rerank_threshold(chunks, min_rerank_score=-100.0, top_n=3)
+    assert len(result) == 3
+    assert [c.chunk_id for c in result] == ["doc_0", "doc_1", "doc_2"]
+
+
+def test_apply_rerank_threshold_does_not_re_sort_input():
+    # Stage 9 trusts Stage 8.5's ordering - it must not silently re-sort a
+    # caller-provided list that happens to be out of order, since that would
+    # mask a bug in the reranker rather than surface it.
+    out_of_order = [_make_chunk(0, score=1.0), _make_chunk(1, score=9.0)]
+    result = apply_rerank_threshold(out_of_order, min_rerank_score=0.0, top_n=5)
+    assert [c.chunk_id for c in result] == ["doc_0", "doc_1"]
+
+
+def test_apply_rerank_threshold_empty_input_returns_empty():
+    assert apply_rerank_threshold([]) == []
+
+
+def test_apply_rerank_threshold_defaults_match_module_constants():
+    from retrieval.retriever import MIN_RERANK_SCORE, TOP_N
+
+    chunks = [_make_chunk(i, score=100.0 - i) for i in range(10)]
+    result = apply_rerank_threshold(chunks)
+    assert len(result) == min(TOP_N, len(chunks))
+    assert all(c.score >= MIN_RERANK_SCORE for c in result)

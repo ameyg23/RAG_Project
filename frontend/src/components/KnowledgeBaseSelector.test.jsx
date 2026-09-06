@@ -5,10 +5,10 @@ import KnowledgeBaseSelector from './KnowledgeBaseSelector'
 
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal()
-  return { ...actual, getHealth: vi.fn(), listKnowledgeBases: vi.fn() }
+  return { ...actual, getHealth: vi.fn(), listKnowledgeBases: vi.fn(), listDocuments: vi.fn() }
 })
 
-import { getHealth, listKnowledgeBases } from '../api/client'
+import { getHealth, listDocuments, listKnowledgeBases } from '../api/client'
 
 function mockDefaults({ userKb = null } = {}) {
   getHealth.mockResolvedValue({ status: 'ok', session_token: 'test-token', vector_store: 'connected' })
@@ -17,6 +17,9 @@ function mockDefaults({ userKb = null } = {}) {
   ]
   if (userKb) knowledgeBases.push(userKb)
   listKnowledgeBases.mockResolvedValue({ knowledge_bases: knowledgeBases })
+  // SessionContext eagerly backfills the shared "your documents" list once a
+  // session token exists — mock it so this doesn't hit the real network.
+  listDocuments.mockResolvedValue({ knowledge_base_id: 'kb_user_test-token', documents: [] })
 }
 
 function renderWithProvider(ui) {
@@ -41,13 +44,14 @@ describe('KnowledgeBaseSelector', () => {
     expect(screen.getByRole('tab', { name: /demo/i })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('shows an empty hint for Your documents when it has no uploads', async () => {
+  it('shows just "Your Documents" on the tab whether or not it has uploads', async () => {
     renderWithProvider(<KnowledgeBaseSelector />)
     await waitFor(() => expect(getHealth).toHaveBeenCalled())
-    expect(await screen.findByText(/empty, upload to get started/i)).toBeInTheDocument()
+    const tab = await screen.findByRole('tab', { name: /your documents/i })
+    expect(tab).toHaveTextContent(/^Your Documents$/)
   })
 
-  it('does not show the empty hint once the user knowledge base has documents', async () => {
+  it('still shows just "Your Documents" once the user knowledge base has documents', async () => {
     mockDefaults({
       userKb: {
         knowledge_base_id: 'kb_user_test-token',
@@ -59,8 +63,7 @@ describe('KnowledgeBaseSelector', () => {
     })
     renderWithProvider(<KnowledgeBaseSelector />)
     await waitFor(() => expect(listKnowledgeBases).toHaveBeenCalled())
-    await waitFor(() =>
-      expect(screen.queryByText(/empty, upload to get started/i)).not.toBeInTheDocument()
-    )
+    const tab = await screen.findByRole('tab', { name: /your documents/i })
+    expect(tab).toHaveTextContent(/^Your Documents$/)
   })
 })

@@ -10,6 +10,7 @@ vi.mock('../api/client', async (importOriginal) => {
     ...actual,
     getHealth: vi.fn(),
     listKnowledgeBases: vi.fn(),
+    listDocuments: vi.fn(),
     uploadDocuments: vi.fn(),
     getDocumentStatus: vi.fn(),
     deleteDocument: vi.fn(),
@@ -21,6 +22,7 @@ import {
   deleteDocument,
   getDocumentStatus,
   getHealth,
+  listDocuments,
   listKnowledgeBases,
   uploadDocuments,
 } from '../api/client'
@@ -32,6 +34,11 @@ function mockDefaults() {
       { knowledge_base_id: 'kb_demo', kind: 'demo', name: 'Demo', document_count: 0, suggested_questions: [] },
     ],
   })
+  // SessionContext eagerly backfills the shared "your documents" list as
+  // soon as a session token is available (Bug 1's canonical-source fix) —
+  // default to empty so every test starts from a known, controlled state
+  // instead of hitting the real (unmocked-here) network.
+  listDocuments.mockResolvedValue({ knowledge_base_id: 'kb_user_test-token', documents: [] })
 }
 
 function makeFile(name = 'a.txt') {
@@ -204,7 +211,7 @@ describe('DocumentsPanel', () => {
     const sixFiles = Array.from({ length: 6 }, (_, i) => makeFile(`f${i}.txt`))
     fireEvent.change(screen.getByLabelText(/upload documents/i), { target: { files: sixFiles } })
 
-    expect(screen.getByText(/up to 5 files/i)).toBeInTheDocument()
+    expect(screen.getByText('You can upload up to 5 files at a time.')).toBeInTheDocument()
     expect(uploadDocuments).not.toHaveBeenCalled()
   })
 
@@ -223,5 +230,53 @@ describe('DocumentsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /upload/i }))
 
     expect(await screen.findByText(/unsupported file type/i)).toBeInTheDocument()
+  })
+
+  // New for the drag-and-drop dropzone: dropping files must feed the exact
+  // same validate/upload code path as the file input, not a parallel one.
+  it('accepts a dropped file through the same validate/upload path as the file input', async () => {
+    uploadDocuments.mockResolvedValue({
+      session_token: 'test-token',
+      knowledge_base_id: 'kb_user_test-token',
+      documents: [{ document_id: 'd9', filename: 'dropped.txt', status: 'UPLOADED' }],
+    })
+    getDocumentStatus.mockResolvedValue({ document_id: 'd9', status: 'READY', failure_reason: null })
+
+    render(
+      <SessionProvider>
+        <KnowledgeBaseSelector />
+        <DocumentsPanel />
+      </SessionProvider>
+    )
+    fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
+
+    const dropzone = document.querySelector('.documents-panel__dropzone')
+    const file = makeFile('dropped.txt')
+    fireEvent.drop(dropzone, { dataTransfer: { files: [file] } })
+
+    expect(screen.getByText(/1 of 5 files selected/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /upload/i }))
+
+    expect(await screen.findByText(/READY/)).toBeInTheDocument()
+    expect(uploadDocuments).toHaveBeenCalledWith([file])
+  })
+
+  it('rejects an oversized dropped file using the same validation as the file input', async () => {
+    render(
+      <SessionProvider>
+        <KnowledgeBaseSelector />
+        <DocumentsPanel />
+      </SessionProvider>
+    )
+    fireEvent.click(await screen.findByRole('tab', { name: /your documents/i }))
+
+    const dropzone = document.querySelector('.documents-panel__dropzone')
+    const bigFile = new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'big.txt', {
+      type: 'text/plain',
+    })
+    fireEvent.drop(dropzone, { dataTransfer: { files: [bigFile] } })
+
+    expect(screen.getByText(/larger than 5mb/i)).toBeInTheDocument()
+    expect(uploadDocuments).not.toHaveBeenCalled()
   })
 })

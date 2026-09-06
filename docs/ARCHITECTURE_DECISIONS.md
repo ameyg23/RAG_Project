@@ -178,6 +178,21 @@ across a massive corpus.
 (`embed_texts()`); chunk/metadata schema is embedding-model-agnostic aside
 from vector dimension.
 
+**Model note (documentation correction — this ADR was out of sync with the
+running code until this pass):** the model actually deployed is
+`BAAI/bge-small-en-v1.5`, not `all-MiniLM-L6-v2` — a swap made to fix
+resume/short-document recall, with its own re-tuning of
+`MIN_SIMILARITY_SCORE` (see `backend/retrieval/retriever.py`'s docstring for
+the full empirical record: threshold moved from 0.35 to **0.45**, and vector
+dimension stayed 384 by coincidence so `docs/DATA_MODEL.md`/`vector_store.py`
+needed no dimension change, only a `drop_collection()` + re-seed since a
+model swap invalidates existing vectors even at the same dimension). This
+ADR's text above was never updated when that swap shipped; `docs/RAG_PIPELINE.md`
+had the same gap and both are corrected as part of ADR-16/ADR-17 below,
+since those touch the same sections. The reasoning above (no rate limit, no
+quota, no added secret) still applies unchanged to BGE — only the specific
+model name and threshold value were stale.
+
 ---
 
 ## ADR-07: Vector Database — Qdrant Cloud (Free Tier)
@@ -512,3 +527,558 @@ already true given ADR-03's design.
 exists purely to satisfy the security requirement at zero cost.
 
 **Future migration:** N/A — this pattern holds regardless of scale.
+
+---
+
+## ADR-16: Query Rewriting — Second Groq Call Against Client-Supplied, Non-Persisted Conversation History
+
+**Decision:** Follow-up questions (e.g. "what about their vacation days?")
+are resolved into a standalone, retrievable query by a second Groq
+chat-completion call — same provider and model as ADR-08, a different
+prompt — given the current message plus a short window of recent
+conversation turns that the **frontend** includes in the `POST /chat`
+request body as a new optional field, `conversation_history`. The backend
+does not persist this field anywhere; it is read, used to produce one
+rewritten query string, and discarded at the end of that single request.
+
+**Options considered:**
+1. No rewriting; rely on retrieval + prompt instructions alone (status quo).
+2. Client-side heuristic rewriting (regex for pronouns/demonstratives).
+3. Server-side LLM rewrite, gated by a client-side or server-side heuristic
+   ("does this look like it needs history?").
+4. Server-side LLM rewrite unconditionally whenever history is present
+   (chosen), skipped only when history is empty.
+5. A second, different LLM provider dedicated to rewriting.
+
+**Selected:** Option 4 — a Groq call via a new `retrieval/query_rewrite.py`
+module (Stage 6.5, see `docs/RAG_PIPELINE.md`), triggered whenever
+`conversation_history` is non-empty; skipped entirely on a thread's first
+message (nothing to resolve a pronoun against, and it saves a Groq call on
+every thread's opening turn, which is also usually the highest-traffic case
+for the demo KB's suggested-question buttons).
+
+**Reason:** Option 1 doesn't fix the actual reported problem — a follow-up's
+pronoun has no referent to embed against, so retrieval silently fails no
+matter how good the embedding model or reranker is; this is a retrieval-input
+problem, not a retrieval-quality problem, and none of the existing three
+grounding layers (docs/RAG_PIPELINE.md "Grounding Strategy") address it.
+Option 2 was rejected because reliably resolving "their"/"it"/"that"/"what
+about X instead" requires actual language understanding — a regex will
+under- or over-fire in ways that are silent and hard to test for
+(a wrong-referent rewrite looks identical to a correct one until the wrong
+chunks come back). Option 3 (heuristic-gated LLM call) was rejected for V1
+specifically to avoid a second, independent failure surface: a false-negative
+heuristic (deciding rewriting isn't needed when it actually is) degrades
+correctness silently, whereas the chosen prompt already handles the "already
+standalone" case explicitly ("rewrite it as a standalone question, or return
+it unchanged if already standalone") — so the cost of "always try" versus
+"only try when needed" is mostly one extra Groq round-trip, not extra
+correctness risk, and Groq's measured latency (ADR-08: as low as ~70ms in
+the live test) makes that trade acceptable at this project's scale. Option 5
+was rejected for the same reason ADR-06 rejected a second embedding
+provider: Groq's free tier is already the cheapest zero-card option in use,
+and a second LLM provider is a second secret/account for no correctness
+benefit NFR-005 would have to justify.
+
+**Why this doesn't violate `docs/REQUIREMENTS.md` §12's exclusion of
+"multi-turn conversation memory that persists across browser sessions or
+devices":** nothing new is persisted server-side. `conversation_history` is
+an ephemeral, per-request echo of state the frontend already holds in
+memory (`SessionContext.jsx`'s `chatMessages`, confirmed already existing
+and already never sent to the backend before this ADR). The backend remains
+exactly as stateless across requests as ADR-12 established — this ADR adds a
+field to one request's payload, not a new persistence layer. A closed
+browser tab loses the conversation exactly as it does today (FR-023);
+resuming a session on a different device still starts a blank thread, since
+there is nowhere server-side this history could have been recovered from
+even if the client wanted to.
+
+**Request-shape change (docs/API.md, `backend/models/schemas.py`):**
+```json
+{
+  "knowledge_base_id": "kb_demo",
+  "message": "What about their vacation days?",
+  "conversation_history": [
+    { "role": "user", "content": "Tell me about the engineering team's benefits" },
+    { "role": "assistant", "content": "Engineering employees get a 401(k) match [1] and full health coverage [2]." }
+  ]
+}
+```
+- `conversation_history`: optional, defaults to `[]`. Each entry:
+  `{ "role": "user" | "assistant", "content": string }`.
+- **Frontend responsibility:** send the last **3 exchanges** (up to 6
+  entries: 3 user + 3 assistant turns), taken from `chatMessages`
+  *excluding* the just-typed current message (which stays in the separate
+  `message` field, unchanged). 3 exchanges is a starting point, tunable by
+  the frontend/QA agents without an API shape change.
+- **Backend validation (defense-in-depth, NFR-006):** hard cap of 8 entries
+  server-side regardless of what the client sends (a misbehaving/future
+  client sending more must not blow the rewrite-prompt's token budget); each
+  entry's `content` capped at 2,000 characters, mirroring `ChatRequest.message`'s
+  existing validator in `backend/models/schemas.py`.
+- Not a new persisted entity — `docs/DATA_MODEL.md` §6 (ChatMessage) is
+  updated to note this field's shape without introducing a server-side
+  ChatMessage record; §5 (ChatSession) is unchanged (still no message
+  history in that map).
+
+**Rewriting call / prompt approach:** a short, dedicated system prompt
+("Given this conversation and a follow-up question, rewrite the follow-up
+as a fully standalone question that can be understood without the history.
+Preserve the user's original intent and phrasing style. If the follow-up is
+already standalone, return it unchanged. Respond with only the rewritten
+question, no explanation.") plus the history turns and the raw message as
+the user turn. Reuses `generation.get_client()`/`generation.generate()`
+(same Groq client, same model, `temperature≈0.0`, small `max_tokens≈100` —
+the output is one short question, not an essay).
+
+**Where the rewritten query is used — deviates from the naive default, see
+Reason:** the rewritten, standalone query is used for **both** Stage 7's
+query embedding **and** as the `QUESTION:` fed into Stage 11's generation
+prompt — not retrieval-only. The pronoun-ambiguity problem that motivates
+rewriting in the first place applies equally to the generation call: if
+`generation.answer_question()` were handed the raw "what about their
+vacation days?" alongside only the retrieved chunks (no history), the LLM
+has the same missing-referent problem retrieval had, and Stage 11's system
+prompt cannot resolve a referent that plain isn't in its input. The user
+still sees their own original phrasing in the chat thread — the frontend
+never displays the rewritten text, and the rewritten text is never appended
+to `chatMessages` or echoed back in `conversation_history` on the *next*
+turn (which re-sends the user's actual original messages) — this
+specifically avoids "rewrite of a rewrite" drift compounding across a long
+thread.
+
+**Failure handling:** if the rewrite call itself fails (Groq timeout/rate
+limit/malformed response — the same `LLMUnavailableError` class ADR-08's
+generation call can raise), the request does **not** hard-fail with a 502.
+It falls back to using the raw `message` as both the retrieval query and the
+generation question (i.e. behaves exactly as it did before this ADR),
+logged server-side per NFR-009. Reason: the rewrite call is an internal
+retrieval-quality enhancement, not the user-facing "give me an answer"
+dependency `docs/API.md`'s `502 LLM_UNAVAILABLE` contract already exists
+for (Stage 12's generation call); degrading gracefully to today's behavior
+on a rewrite hiccup is strictly better than turning a solvable problem into
+a hard error the client must retry.
+
+**Advantages:** fixes the reported UX gap directly at its source (the
+retrieval input, not retrieval quality); reuses an already-integrated,
+already-free provider (no new secret, no new account, NFR-005 unaffected);
+the prompt's own "return unchanged if already standalone" instruction makes
+this safe to call unconditionally without a separate need-detection step.
+
+**Disadvantages:** one additional Groq round-trip per non-opening chat turn
+— added latency (bounded by Groq's documented speed, ADR-08) and added
+consumption against Groq's free-tier 30 RPM/day caps (now up to 2 Groq calls
+per turn instead of 1 for any thread beyond its first message); a "rewrite
+drift" risk over a very long thread is mitigated by always re-deriving the
+rewrite from the user's original messages (never chaining rewritten text
+into history), not eliminated for pathologically long threads (out of scope
+at this project's demo scale).
+
+**Free-tier implications:** $0 — same Groq account/key as ADR-08, no new
+service. The practical risk is hitting Groq's existing rate ceiling sooner
+under sustained multi-turn traffic; this was already a documented risk in
+ADR-08 and is not a new *kind* of cost, just a higher rate of an existing one.
+
+**Future migration:** if Groq's rate limit becomes a real constraint,
+options are (a) a cheap heuristic pre-filter to skip rewriting on
+obviously-standalone messages (Option 3 above, deferred rather than
+rejected outright), or (b) a smaller/local rewriting model if one proves
+adequate — `query_rewrite.py` isolates this behind one function the same
+way `generation.generate()` isolates the LLM provider (ADR-08's own
+migration path), so either change is contained to one module.
+
+---
+
+## ADR-17: Reranking — Local Cross-Encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
+
+**Decision:** retrieval widens its initial candidate pool from Qdrant, a
+local cross-encoder reranks that pool, and only the reranked top-N chunks
+reach the LLM — inserted as a new Stage 8.5 in `docs/RAG_PIPELINE.md`,
+between Similarity Search (Stage 8) and Top-K Retrieval (Stage 9, whose
+threshold-and-cap logic now operates on rerank scores instead of raw cosine
+scores).
+
+**Options considered:**
+1. No reranker; keep tuning `MIN_SIMILARITY_SCORE` alone.
+2. A hosted reranking API (Cohere Rerank free tier, Jina Reranker free tier).
+3. A local cross-encoder via `sentence-transformers`'s `CrossEncoder` class
+   (chosen).
+4. A second, larger local reranker model (e.g. a `bge-reranker` variant).
+
+**Selected:** Option 3 — `cross-encoder/ms-marco-MiniLM-L-6-v2`, run
+in-process on the same CPU the embedding model already runs on, via
+`sentence-transformers`'s `CrossEncoder` class (already an installed
+dependency per `requirements.txt` — `sentence-transformers==3.3.1` ships
+`CrossEncoder` alongside `SentenceTransformer`; **zero new package**).
+
+**Reason:** Option 1 was already tried and hit a real ceiling — the
+`no_context_precision` regression documented in `backend/retrieval/retriever.py`'s
+docstring is explicitly *not* fixable by threshold tuning alone (raising
+`MIN_SIMILARITY_SCORE` past the offending no-context cases' scores would
+gut resume-fixture recall first). Option 2 was rejected for the same reason
+ADR-06 rejected hosted embedding APIs: every hosted reranking free tier
+imposes its own rate limit, its own account, and its own secret (NFR-005),
+purely to replace a computation this project's existing dependency already
+provides for free with no rate limit at all. Option 4 was rejected as
+premature — `ms-marco-MiniLM-L-6-v2` is the standard, well-documented
+default cross-encoder for this exact use case (reranking bi-encoder
+retrieval output), small enough (~80MB, comparable to ADR-06's BGE
+download) to be a safe first choice on a free-tier CPU instance, and this
+project's retrieval funnel is small (candidate pools of ~20 short chunks
+per query) — a bigger model is a tuning lever to reach for only if
+evaluation shows this one underperforms, not a default.
+
+**Why a cross-encoder specifically fixes the `no_context_precision` gap
+(architectural expectation, not yet measured — see Validation below):** a
+bi-encoder (BGE) embeds the query and each chunk independently, so its
+cosine similarity is fundamentally a coarse *topical/lexical proximity*
+signal — this is exactly why "What is the weather forecast for tomorrow?"
+(0.48) and "How do I file my personal income taxes?" (0.61) score high
+enough to pass `MIN_SIMILARITY_SCORE=0.45` against a company handbook: they
+share enough surface vocabulary/topic-adjacency (schedules, money, dates)
+with real chunks to look deceptively relevant to a model that never compares
+the query and chunk *together*. A cross-encoder jointly attends over the
+full `(query, chunk)` pair token-by-token in one forward pass, which is a
+strictly more discriminating signal for "does this specific chunk actually
+answer this specific question" — the exact judgment a bi-encoder's
+independent-vector design cannot make. This is why the RAG agent flagged
+"a reranker" as the fix (`retriever.py`'s docstring, "Flagged for
+Architect/QA follow-up (e.g. a reranker)") rather than further threshold
+tuning.
+
+**Retrieval funnel (starting numbers — tunable by RAG/QA against
+`evaluation/scripts/run_evaluation.py`, not final):**
+- Stage 8 (Similarity Search): widen from today's `top_k=5` to
+  **`top_k=20`** candidates, still gated by the existing
+  `MIN_SIMILARITY_SCORE=0.45` as a **cheap pre-filter** — its job changes
+  from "the final relevance gate" to "cut obvious noise before the more
+  expensive cross-encoder runs on it," which is still a real filtering step
+  since `count_chunks_for_knowledge_base` can return dozens of chunks from a
+  KB that has nothing to do with the question.
+- Stage 8.5 (Reranking, new): `CrossEncoder.predict([(rewritten_query, chunk.text) for chunk in candidates])`
+  over the ≤20 survivors of Stage 8; re-sort descending by rerank score.
+  The reranker scores the **rewritten** query from ADR-16 (not the raw,
+  possibly-ambiguous original message) against each candidate — the
+  referent-resolution problem ADR-16 exists to fix applies to the
+  reranker's judgment exactly as it does to embedding and generation.
+- Stage 9 (Top-K Retrieval, modified): apply a **new** `MIN_RERANK_SCORE`
+  threshold to the reranked list, then cap at a final **`top_n=5`** (kept
+  equal to today's value to preserve Stage 10's ~4,000-char/5-chunk context
+  budget unchanged; QA may find 3 sufficient once reranking improves
+  precision, but that's a follow-up tuning question, not this ADR's call).
+  Below-threshold → the same empty-list short-circuit Stage 10 already
+  implements (no chunks reach the LLM, no code-path change needed there).
+
+**How this changes the no-context decision:** `MIN_RERANK_SCORE` — not
+`MIN_SIMILARITY_SCORE` — becomes the actual final arbiter of "is there
+real, on-topic content for this question." `MIN_SIMILARITY_SCORE` survives
+only as Stage 8's cheap pre-filter (its purpose: bound how many candidates
+the more expensive cross-encoder step has to score, not decide relevance).
+The exact `MIN_RERANK_SCORE` numeric value is **not specified here** — a
+cross-encoder's raw output range is not a bounded, cross-model-comparable
+similarity like cosine is (it depends on the model's training objective and
+whether a sigmoid is applied), so, exactly like `MIN_SIMILARITY_SCORE=0.45`'s
+own history (`retriever.py`'s docstring), this must be empirically measured
+against real demo-KB and no-context-control scores before being hardcoded —
+this is the RAG/QA implementation pass's job, not an architectural decision
+made in the abstract.
+
+**Model loading:** load `CrossEncoder(...)` once per process at first use
+(module-level singleton, mirroring `embed.py`'s `get_model()` and
+`generation.py`'s `get_client()` pattern) — never per-request, for the same
+cold-start-cost reason ADR-06 already established.
+
+**Validation:** this ADR's expectation that reranking closes the
+`no_context_precision` gap must be confirmed, not assumed — re-run
+`evaluation/scripts/run_evaluation.py` after implementation and compare
+against `evaluation/results/20260906T052601Z.json`'s baseline
+(`no_context_precision: 0.6`) as the RAG/QA agents' acceptance check.
+Latency added by the cross-encoder step (≤20 short-passage forward passes
+on Render's free-tier CPU) should also be measured directly rather than
+assumed acceptable, per this project's established practice of verifying
+real behavior over live infrastructure (ADR-07, ADR-08's own lessons).
+
+**Advantages:** zero new dependency, zero new secret/account, zero added
+recurring cost; directly targets a documented, measured quality gap rather
+than a speculative one; isolated behind one new module
+(`retrieval/reranker.py`), same "swap one function" portability pattern as
+ADR-06/ADR-08.
+
+**Disadvantages:** added CPU latency per chat request (unmeasured until
+implemented — flagged above); a second model to keep loaded in the free-tier
+instance's limited RAM alongside the embedding model, Qdrant client, and
+Groq client (all currently small models; expected to still fit Render's
+free-tier ceiling per ADR-03/ADR-10, but not verified in this ADR); one more
+empirically-tuned magic number (`MIN_RERANK_SCORE`) for a future
+maintainer to understand, mitigated by requiring the same documented
+empirical-tuning-note convention `retriever.py` already establishes for
+`MIN_SIMILARITY_SCORE`.
+
+**Free-tier implications:** $0 — local CPU inference, no API, no rate
+limit, same free-tier profile as ADR-06's embedding model.
+
+**Future migration:** swap the cross-encoder model name, or replace the
+local `CrossEncoder` call with a hosted reranking API, by changing
+`retrieval/reranker.py` only; the funnel shape (widen → rerank → cap)
+is provider-agnostic in the same way `vector_store.py`'s adapter boundary
+already isolates Qdrant (ADR-07's own migration path).
+
+---
+
+## ADR-18: Real-Time Chat Progress — Chunked NDJSON Streaming over `POST /chat`
+
+**Decision:** `POST /chat` changes from a single synchronous JSON response to
+a chunked, newline-delimited-JSON (NDJSON) streaming response. The backend
+yields one small JSON object per real pipeline milestone as it actually
+completes (query rewrite/embed/retrieve, rerank/threshold, generation,
+post-generation checks), and a final object carrying the same `answer`/
+`sources[]` payload the endpoint has always returned. The frontend replaces
+its generic "Thinking…" spinner with one of four real-progress labels
+(`SEARCHING`/`RETRIEVING`/`GENERATING`/`VALIDATING`) that track genuine
+backend execution time, not a fake timer.
+
+**Options considered:**
+1. A separate `GET /chat/{job_id}/progress` endpoint the frontend polls
+   (job-table pattern).
+2. WebSocket connection for the chat request.
+3. Server-Sent Events via the browser's native `EventSource`.
+4. Chunked NDJSON body over the existing `POST /chat`, read via
+   `fetch()` + `response.body.getReader()` (chosen).
+
+**Selected:** Option 4.
+
+**Reason:** Option 1 requires inventing server-side job state (an in-memory
+job table keyed by a new id, a second endpoint, a client polling loop) purely
+to narrate a single request that already completes in a few seconds
+end-to-end — disproportionate complexity for this project's scale, and a
+second persistence concern ADR-12 deliberately avoided elsewhere. Option 2
+adds a new connection lifecycle (open/close/reconnect handling) and, on most
+minimal setups, a new server-side dependency, for no benefit over a one-shot
+stream when there is exactly one logical exchange per chat turn. Option 3 is
+the common naive suggestion here but does not actually work for this
+endpoint: `EventSource` only issues `GET` requests and cannot carry a custom
+request body or the `X-Session-Token` header this app already depends on for
+user-KB auth (ADR-14) — `/chat` needs to send `knowledge_base_id`/`message`/
+`conversation_history` as a POST body, which `EventSource` structurally
+cannot do. Option 4 needs **zero new dependency on either side** — Starlette's
+`StreamingResponse` (already inside the installed `fastapi`/`uvicorn` stack,
+ADR-03) and the browser's native `fetch` streaming body reader are both
+already available — and keeps the single-request/single-response mental
+model this project's other ADRs consistently prefer (ADR-02/05/11/13):
+one code path, no job-state, no new protocol.
+
+**Wire format:** `media_type="application/x-ndjson"`; one JSON object per
+line (`\n`-terminated), each `{"stage": "..."}` plus any stage-specific
+fields:
+
+```
+{"stage": "SEARCHING"}
+{"stage": "RETRIEVING"}
+{"stage": "GENERATING"}
+{"stage": "VALIDATING"}
+{"stage": "COMPLETED", "answer": "...", "sources": [ { "document_id": ..., "document_name": ..., "locator": ..., "snippet": ..., "is_removed": false } ]}
+```
+
+Mid-stream failure (HTTP status is already 200 and cannot change once
+streaming has begun, so the error is signaled in-band):
+
+```
+{"stage": "ERROR", "code": "LLM_UNAVAILABLE", "message": "The answer service is temporarily unavailable. Please try again shortly.", "retryable": true}
+{"stage": "ERROR", "code": "VECTOR_STORE_UNAVAILABLE", "message": "The knowledge base search is temporarily unavailable. Please try again shortly.", "retryable": true}
+{"stage": "ERROR", "code": "INTERNAL_ERROR", "message": "An unexpected error occurred. Please try again shortly.", "retryable": false}
+```
+
+A request that fails validation **before** any pipeline stage begins
+(unknown `knowledge_base_id`, forbidden `kb_user_*`, empty KB, empty/oversized
+`message`) is unaffected by any of this: it never opens a stream at all —
+`chat.py` performs exactly the same checks it does today and raises the same
+`ApiError` → plain `404`/`403`/`503`/`400` JSON response, since nothing about
+those needs progress reporting (they're known before any real work starts).
+
+**Stage-to-pipeline mapping (`docs/RAG_PIPELINE.md` stage numbers):**
+
+| UI stage | Label | Backend work covered | Code location |
+|---|---|---|---|
+| `SEARCHING` | "Searching documents…" | Stage 6.5 (query rewrite) + Stage 7 (embed) + Stage 8 (candidate-pool vector search) | `chat.py`: `query_rewrite.rewrite_query`, `embed_query`, `retriever.retrieve` |
+| `RETRIEVING` | "Retrieving relevant information…" | Stage 8.5 (cross-encoder rerank) + Stage 9 (threshold + cap) | `chat.py`: `reranker.rerank`, `retriever.apply_rerank_threshold` |
+| `GENERATING` | "Generating answer…" | Stage 10 (context construction) + Stage 11 (prompt) + Stage 12 (Groq call) | `generation.answer_question` |
+| `VALIDATING` | "Checking sources…" | Stage 14 (citation resolution) + **new**: per-cited-document existence check | `generation.build_sources` + new `chat.py` helper (see below) |
+
+Each stage event is yielded *before* its corresponding work begins and the
+next event is yielded only once that work's real result is available — a
+50ms rerank flashes the `RETRIEVING` label past almost instantly; a slow Groq
+completion holds `GENERATING` on screen for exactly as long as the real call
+takes. No `sleep`/timer of any kind is introduced anywhere in this design.
+
+**What "VALIDATING" actually does (closes a real, pre-existing gap —
+FR-042):** investigation confirmed there is **no existing distinct
+post-generation validation step** in the current pipeline —
+`generation.build_sources()` hardcodes `"is_removed": False` on every source,
+unconditionally, always has (`retrieval/generation.py` line 158). Yet
+`docs/DATA_MODEL.md` §7 and `docs/REQUIREMENTS.md` FR-042 already specify
+real semantics for this exact field: *"if the underlying document has been
+deleted after an answer was generated, the citation still renders but is
+marked as referring to a removed document."* This is a genuine, already-
+specified requirement that was simply never implemented — the frontend's
+`chat-source--removed` CSS/JSX (`ChatPanel.jsx`) has been dead code waiting
+for a backend that actually sets `is_removed: true`. Rather than inventing a
+fake "validating" stage, this ADR uses the real opportunity: `VALIDATING`
+now performs one cheap, real check per **distinct** cited `document_id`:
+
+```
+for each distinct document_id in sources:
+    if is_demo_document_id(document_id):        # store.py — permanent, never removed
+        exists = True
+    else:
+        exists = vector_store.count_chunks_for_document(document_id, knowledge_base_id=kb_id) > 0
+    mark every source row for that document_id with is_removed = not exists
+```
+
+This directly answers "did the source this answer cites still exist by the
+time we finished generating?" — a real race (`DELETE /documents/{id}` running
+concurrently with an in-flight chat request that already retrieved chunks
+from that document moments earlier) that the current single-shot request
+already cannot detect. Both helper functions already exist
+(`vector_store.count_chunks_for_document`, `store.is_demo_document_id`) —
+**zero new backend dependency**. Typical cost: 0–5 extra Qdrant count calls
+per chat turn (one per distinct cited document, almost always ≤5 per
+Stage 9's `TOP_N=5` cap). If this check itself fails (Qdrant hiccup), it is
+caught and logged server-side, falling back to `is_removed: False` for the
+affected source(s) — the same graceful-degrade-rather-than-hard-fail
+philosophy ADR-16 already established for query rewriting: a diagnostic
+enhancement's own failure must never turn an otherwise-successful answer
+into an error.
+
+**Error taxonomy (preserves today's retryable/non-retryable behavior
+exactly, see Frontend section below):**
+
+| Raised where | Event `code` | `retryable` | Equivalent to today's… |
+|---|---|---|---|
+| `generation.answer_question` raises `LLMUnavailableError` | `LLM_UNAVAILABLE` | `true` | `502 LLM_UNAVAILABLE` (FR-054) |
+| `embed_query`/`retriever.retrieve`/`reranker.rerank`/`apply_rerank_threshold` raise (Qdrant exhausted its own internal retries, or any exception in that stage) | `VECTOR_STORE_UNAVAILABLE` | `true` | **New — closes a latent FR-055 gap.** FR-055 already requires vector-DB failures to surface as *retryable*, distinguished from an LLM failure, but `chat.py` today has no explicit handling for this at all — an uncaught exception there currently falls through to the global `500 INTERNAL_ERROR` handler, which today's frontend treats as **non-retryable** (`status !== 502/0`). This ADR's restructuring of `chat.py` into explicit per-stage try/except blocks (needed anyway, to emit a clean stream-terminating event instead of an abrupt disconnect) is the natural place to finally implement FR-055 as specified. |
+| Anything else unexpected | `INTERNAL_ERROR` | `false` | `500 INTERNAL_ERROR` (unchanged fallback) |
+
+**Frontend error handling — additive, not a rewrite of `errorDisplay()`:**
+`ApiError` (`frontend/src/api/client.js`) gains one new optional 4th
+constructor argument, `retryable`, defaulting to `undefined`. `errorDisplay()`
+(`ChatPanel.jsx`) changes by exactly one line:
+`const retryable = err.retryable ?? (err.status === 502 || err.status === 0)`.
+Every existing call site (`/health`, `/knowledge-bases`, `/documents/*`, and
+`/chat`'s own pre-stream 400/403/404/503 paths) never passes a 4th argument,
+so `err.retryable` is `undefined` there and `??` falls through to exactly
+today's status-based check — **zero behavior change** for every
+already-tested error path. Only the new streaming error events construct
+`ApiError` with an explicit `retryable` boolean, carried over the wire
+verbatim from the table above instead of being inferred from an HTTP status
+that no longer exists once the 200 response has started streaming.
+
+**Concurrency/cancellation (frontend-only, no backend state needed — the
+backend stays exactly as stateless as ADR-12 established):** `ChatPanel.jsx`
+keeps a `requestIdRef` (incrementing counter) and an `abortControllerRef`.
+Before starting any new streamed request: abort the previous
+`AbortController` (if one exists), increment `requestIdRef`, create a fresh
+`AbortController`, and pass its `signal` into `fetch()`. The `onStage`
+callback and the final resolve/reject handling both re-check
+`requestIdRef.current === myRequestId` before touching React state — belt
+and suspenders on top of the abort itself, since an already-buffered NDJSON
+line read a moment before `abort()` took effect could otherwise still fire
+one stale `onStage` call. A cancelled/superseded request's status is removed
+from the UI the instant `abort()`/the id-check fires — it never renders a
+stage from an older request once a newer one has started, and an aborted
+fetch's `AbortError` is treated as a silent no-op (no error banner — the
+request was deliberately superseded, not genuinely failed). Note: today's
+`isSending` guard already prevents the composer/submit/retry/suggestion-card
+paths from firing a second request while one is in flight, so this mechanism
+is defense-in-depth against fast-double-click/StrictMode-style races rather
+than a scenario reachable through the normal UI today — cheap insurance,
+built exactly to the letter of the stated requirement. Aborting only stops
+the **client from displaying further updates**; it does not attempt to
+cancel backend compute already in flight (e.g., a Groq call already sent) —
+identical in kind to today's behavior where an abandoned tab's pending
+`fetch()` promise simply resolves into nothing once nobody is listening.
+
+**Cold-start interaction:** `COLD_START_DELAY_MS`/"Waking up the server…"
+is kept, but re-targeted: the existing 5-second timer now clears on the
+**first stage event received** (not just at the end of the whole request,
+as today). This is a strictly better signal than before — Render free-tier
+spin-up (ADR-10) blocks the TCP/HTTP connection itself, so it delays literally
+every byte including the very first `SEARCHING` event; "no stage event yet
+after 5s" is a more accurate cold-start proxy than today's "still `isSending`
+after 5s" (which could not distinguish a real cold start from a merely slow
+pipeline before this ADR, since no progress signal existed to tell them
+apart). Once real progress is visible, the cold-start message becomes rarer
+to see at all — it now only ever appears during the genuine pre-connection
+spin-up window, disappearing the instant the first real stage streams in,
+rather than potentially lingering through a slow-but-not-actually-cold
+request as it could before.
+
+**What does not change:** the final `answer`/`sources[]` field shapes
+(`docs/DATA_MODEL.md` §7, `docs/API.md`); `errorDisplay()`'s retryable logic
+for every already-existing error path; demo-vs-user-KB behavior (pre-stream
+validation is untouched, and `is_demo_document_id` keeps demo sources
+permanently non-removed); source rendering/dedup in `ChatPanel.jsx`; and no
+retrieval/generation/reranking logic is reordered or altered — every yield
+point sits *between* existing steps, never inside or around their scoring/
+thresholding.
+
+**Advantages:** zero new dependency on either side; narrates genuine backend
+execution time (a fast stage flashes by, a slow one stays visible exactly as
+long as it takes); finally implements two already-specified requirements
+that had silently regressed to no-ops (FR-042's removed-document marker,
+FR-055's retryable vector-store error); preserves every existing
+error-handling/rendering behavior via one additive field.
+
+**Disadvantages:** `POST /chat`'s wire contract is a breaking change for any
+caller expecting the old single-JSON-body shape — this project's own test
+suite (`backend/tests/test_api.py`) and evaluation harness
+(`evaluation/scripts/run_evaluation.py`, via `httpx`) both currently assert
+a single `.json()` body and must be updated in the same implementation pass
+to parse the NDJSON stream and read the `COMPLETED` event's payload (a small,
+mechanical change — read the response as text/lines, `json.loads` each
+line, use the last `COMPLETED`/`ERROR` event — not a redesign of either
+tool). Chosen over a content-negotiated dual-response-path endpoint (branch
+on `Accept`/a query flag to serve old-style JSON to old callers) because a
+permanent second code path is exactly the kind of complexity ADR-02/05/11/13
+already reject elsewhere in this project for a single-consumer API with no
+external third-party clients to protect.
+
+**Free-tier implications:** $0 — no new external service, no new package;
+same Groq/Qdrant free-tier accounts and call volumes as today (the new
+`VECTOR_STORE_UNAVAILABLE`/FR-042 paths add at most a handful of extra Qdrant
+`count` calls per turn, negligible against Qdrant's free-tier ceiling,
+ADR-07). Deployment-time verification still owed before Phase 21: confirm
+Render's free-tier request path does not buffer a chunked/`StreamingResponse`
+body (no reverse-proxy/gzip layer currently sits in front of it —
+`backend/main.py` adds no compression middleware — but per this project's
+established practice of verifying real infrastructure behavior rather than
+assuming it, ADR-07/08's own lesson, this should get one live smoke test
+once `render.yaml`/deployment exists, not be assumed).
+
+**Future migration:** if a future feature needs true mid-flight
+cancellation of backend compute (not just the frontend ceasing to display
+updates), the generator-based structure this ADR introduces is already the
+right shape to add a `request.is_disconnected()` check between stages
+(Starlette feature) — not required for this ADR's stated goal (progress
+*display*), so deliberately left out of scope here.
+
+**Files touched by the subsequent implementation pass:**
+- Backend: `backend/api/chat.py` (generator-based streaming orchestration,
+  per-stage try/except, `StreamingResponse`), `backend/retrieval/generation.py`
+  (`build_sources` stays pure; the new existence-check helper can live in
+  either `chat.py` or a small addition to `retrieval/generation.py` —
+  implementer's call), no changes needed to `retriever.py`/`reranker.py`
+  themselves (only how their outputs are wrapped in `chat.py`).
+- Backend tests/eval: `backend/tests/test_api.py`, `evaluation/scripts/run_evaluation.py`
+  (both must switch from reading one JSON body to reading the NDJSON stream
+  and extracting the `COMPLETED`/`ERROR` event — required, not optional).
+- Frontend: `frontend/src/api/client.js` (`ApiError`'s new optional
+  `retryable` param; new `sendChatMessageStreaming` function alongside/
+  replacing `sendChatMessage`), `frontend/src/components/ChatPanel.jsx`
+  (`currentStage` state replacing `isSending`-only status text, the
+  `requestIdRef`/`abortControllerRef` concurrency guard, the retargeted
+  cold-start timer), `frontend/src/components/ChatPanel.test.jsx` (mocks
+  currently stub `sendChatMessage` as a plain resolving/rejecting promise —
+  must be updated to simulate a staged stream and assert `onStage` sequencing).
+- Docs (this pass): `docs/API.md` (`POST /chat` contract),
+  `docs/RAG_PIPELINE.md` (Stage 14 amendment + streaming-stage cross-reference),
+  `ARCHITECTURE.md` §6 (sequence diagram).

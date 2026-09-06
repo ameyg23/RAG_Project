@@ -5,7 +5,7 @@ import pytest
 from qdrant_client import QdrantClient
 
 from ingestion.chunk import chunk_document
-from ingestion.embed import embed_texts
+from ingestion.embed import embed_query, embed_texts
 from ingestion.extract import extract_and_clean
 from retrieval import vector_store
 
@@ -72,7 +72,7 @@ def test_query_returns_relevant_document():
     vector_store.upsert_chunks(handbook_chunks, handbook_vectors)
     vector_store.upsert_chunks(security_chunks, security_vectors)
 
-    (query_vector,) = embed_texts(["How many vacation days do I get?"])
+    query_vector = embed_query("How many vacation days do I get?")
     results = vector_store.query(query_vector, knowledge_base_id="kb_demo", top_k=3)
 
     assert results

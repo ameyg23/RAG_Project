@@ -13,7 +13,7 @@ class Settings:
     QDRANT_API_KEY: str | None = os.environ.get("QDRANT_API_KEY")
     CORS_ALLOWED_ORIGIN: str = os.environ.get("CORS_ALLOWED_ORIGIN", "http://localhost:5173")
     EMBEDDING_MODEL_NAME: str = os.environ.get(
-        "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+        "EMBEDDING_MODEL_NAME", "BAAI/bge-small-en-v1.5"
     )
     # Default per ADR-08. Groq's free-tier model catalog changes over time
     # (this default itself replaced a since-removed model during Phase 10) —

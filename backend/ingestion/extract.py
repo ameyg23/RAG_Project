@@ -45,7 +45,22 @@ def _extract_raw_units(file_path: str, file_type: str) -> list[TextUnit]:
         from langchain_community.document_loaders import PyPDFLoader
 
         try:
-            docs = PyPDFLoader(file_path).load()
+            # extraction_mode="layout" (vs. pypdf/LangChain's default "plain")
+            # asks pypdf to reconstruct a fixed-width text layout that follows
+            # each text run's actual on-page (x, y) position rather than raw
+            # content-stream draw order. This matters specifically for
+            # multi-column PDFs — e.g. a resume exported via a browser's
+            # print-to-PDF from a CSS sidebar+main-column template — where
+            # "plain" mode interleaves whole lines from unrelated columns
+            # (sidebar line, main-column line, sidebar line, ...) because it
+            # has no per-column grouping, destroying reading order even
+            # though each individual line's text is intact. Confirmed via a
+            # synthetic two-column fixture (see
+            # tests/fixtures/generate_fixtures.py:make_two_column_pdf and
+            # tests/test_extract.py's multi-column test) that "layout"
+            # groups each visual row correctly instead of alternating
+            # between columns line-by-line.
+            docs = PyPDFLoader(file_path, extraction_mode="layout").load()
         except Exception as exc:
             raise CorruptedDocumentError(
                 f"Failed to read PDF '{file_path}': {exc}"

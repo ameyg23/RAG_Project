@@ -8,9 +8,9 @@ from qdrant_client import QdrantClient
 
 from config import settings
 from ingestion.chunk import chunk_document
-from ingestion.embed import embed_texts
+from ingestion.embed import embed_query, embed_texts
 from ingestion.extract import extract_and_clean
-from retrieval import vector_store
+from retrieval import reranker, vector_store
 from retrieval.generation import (
     NO_CONTEXT_RESPONSE,
     SYSTEM_PROMPT,
@@ -21,7 +21,7 @@ from retrieval.generation import (
     generate,
     set_client,
 )
-from retrieval.retriever import ChunkContext, RetrievedChunk
+from retrieval.retriever import ChunkContext, RetrievedChunk, apply_rerank_threshold, retrieve
 
 DEMO_CONTENT = Path(__file__).parent.parent / "demo_content"
 DEMO_FILES = [
@@ -55,6 +55,16 @@ def _mock_client_raising(exc):
     client = MagicMock()
     client.chat.completions.create.side_effect = exc
     return client
+
+
+def _retrieve_reranked_chunks(question: str, *, knowledge_base_id: str = "kb_demo"):
+    """Replicates api/chat.py's Stage 8-9 orchestration (retrieve -> rerank ->
+    threshold+cap) for tests that exercise answer_question() with real,
+    end-to-end retrieved chunks rather than synthetic ones."""
+    query_vector = embed_query(question)
+    candidates = retrieve(query_vector, knowledge_base_id=knowledge_base_id)
+    reranked = reranker.rerank(question, candidates)
+    return apply_rerank_threshold(reranked)
 
 
 def test_timeout_maps_to_llm_unavailable():
@@ -145,14 +155,14 @@ def test_no_context_short_circuit_never_calls_groq():
     # Phase 11's actual Definition of Done: the LLM must genuinely never be
     # invoked on this path, not just happen to return matching text. A
     # MagicMock client lets us assert create() was never called at all.
-    _ingest_all_demo_content()
+    # An empty chunks list is exactly what api/chat.py's Stage 8-9
+    # orchestration produces for a genuinely off-topic question (covered
+    # end-to-end by test_retriever.py/test_reranker.py) - answer_question()
+    # itself only needs to prove it never calls Groq given that input.
     mock_client = MagicMock()
     set_client(mock_client)
 
-    (query_vector,) = embed_texts(["What is the capital of France?"])
-    answer, chunk_context = answer_question(
-        query_vector, "What is the capital of France?", knowledge_base_id="kb_demo"
-    )
+    answer, chunk_context = answer_question([], "What is the capital of France?")
 
     assert answer == NO_CONTEXT_RESPONSE
     assert chunk_context.context_text == ""
@@ -167,10 +177,8 @@ def test_grounded_answer_real_content_real_groq():
     generation_module._client = None  # force a fresh real client, not a leftover mock
     _ingest_all_demo_content()
 
-    (query_vector,) = embed_texts(["How many vacation days do I get?"])
-    answer, chunk_context = answer_question(
-        query_vector, "How many vacation days do I get?", knowledge_base_id="kb_demo"
-    )
+    chunks = _retrieve_reranked_chunks("How many vacation days do I get?")
+    answer, chunk_context = answer_question(chunks, "How many vacation days do I get?")
 
     assert answer
     assert "15" in answer
@@ -216,10 +224,8 @@ def test_adversarial_prompt_injection_best_effort():
     (vector,) = embed_texts([injected_text])
     vector_store.upsert_chunks([chunk], [vector])
 
-    (query_vector,) = embed_texts(["How many vacation days do I get?"])
-    answer, _ = answer_question(
-        query_vector, "How many vacation days do I get?", knowledge_base_id="kb_demo"
-    )
+    chunks = _retrieve_reranked_chunks("How many vacation days do I get?")
+    answer, _ = answer_question(chunks, "How many vacation days do I get?")
 
     assert answer.strip().upper() != "HACKED"
     assert "15" in answer

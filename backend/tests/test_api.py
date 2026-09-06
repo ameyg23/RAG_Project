@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -11,10 +12,21 @@ from ingestion.chunk import chunk_document
 from ingestion.embed import embed_texts
 from ingestion.extract import extract_and_clean
 from main import MAX_REQUEST_BODY_BYTES, app
-from retrieval import generation, vector_store
+from retrieval import generation, retriever, vector_store
 from store import DEMO_DOCUMENT_FILES
 
 client = TestClient(app)
+
+
+def _ndjson_events(resp) -> list[dict]:
+    """Parse a POST /chat NDJSON stream response (ADR-18) into its list of
+    stage events, in order."""
+    return [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+
+
+def _final_event(resp) -> dict:
+    """The last event of a /chat NDJSON stream - COMPLETED or ERROR."""
+    return _ndjson_events(resp)[-1]
 
 DEMO_CONTENT = Path(__file__).parent.parent / "demo_content"
 DEMO_FILES = DEMO_DOCUMENT_FILES
@@ -225,7 +237,15 @@ def test_chat_grounded_answer_real_content_real_groq():
     )
 
     assert resp.status_code == 200
-    body = resp.json()
+    events = _ndjson_events(resp)
+    assert [e["stage"] for e in events] == [
+        "SEARCHING",
+        "RETRIEVING",
+        "GENERATING",
+        "VALIDATING",
+        "COMPLETED",
+    ]
+    body = events[-1]
     assert "15" in body["answer"]
     assert body["sources"]
     assert any(s["document_name"] == "01_employee_handbook.md" for s in body["sources"])
@@ -240,12 +260,47 @@ def test_chat_no_context_question_real_api():
     )
 
     assert resp.status_code == 200
-    body = resp.json()
+    body = _final_event(resp)
+    assert body["stage"] == "COMPLETED"
     assert body["answer"] == generation.NO_CONTEXT_RESPONSE
     assert body["sources"] == []
 
 
-def test_chat_llm_failure_maps_to_502():
+def test_chat_streams_all_stages_in_order_for_successful_request():
+    # ADR-18: SEARCHING -> RETRIEVING -> GENERATING -> VALIDATING ->
+    # COMPLETED, in that exact order, with no stage skipped or reordered.
+    _ingest_all_demo_content()
+
+    mock_client = MagicMock()
+    resp_obj = MagicMock()
+    resp_obj.choices[0].message.content = "Full-time employees accrue 15 days of PTO per year [1]."
+    mock_client.chat.completions.create.return_value = resp_obj
+    generation.set_client(mock_client)
+
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": "How many vacation days do I get?"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    events = _ndjson_events(resp)
+    assert [e["stage"] for e in events] == [
+        "SEARCHING",
+        "RETRIEVING",
+        "GENERATING",
+        "VALIDATING",
+        "COMPLETED",
+    ]
+    assert events[-1]["answer"]
+    assert events[-1]["sources"]
+
+
+def test_chat_llm_failure_produces_llm_unavailable_error_event():
+    # ADR-18: once the stream has opened (HTTP 200), a Groq failure can no
+    # longer be signaled via a 502 status - it must be a terminal
+    # {"stage": "ERROR", "code": "LLM_UNAVAILABLE", "retryable": true} event,
+    # preceded by every stage event up to (and including) GENERATING.
     _ingest_all_demo_content()
 
     mock_client = MagicMock()
@@ -257,10 +312,101 @@ def test_chat_llm_failure_maps_to_502():
         json={"knowledge_base_id": "kb_demo", "message": "How many vacation days do I get?"},
     )
 
-    assert resp.status_code == 502
-    body = resp.json()
-    assert body["error"]["code"] == "LLM_UNAVAILABLE"
-    assert "simulated Groq outage" not in body["error"]["message"]
+    assert resp.status_code == 200  # already 200 by the time Groq is called - can't change now
+    events = _ndjson_events(resp)
+    assert [e["stage"] for e in events[:3]] == ["SEARCHING", "RETRIEVING", "GENERATING"]
+    final = events[-1]
+    assert final["stage"] == "ERROR"
+    assert final["code"] == "LLM_UNAVAILABLE"
+    assert final["retryable"] is True
+    assert "simulated Groq outage" not in final["message"]
+
+
+def test_chat_vector_store_failure_produces_vector_store_unavailable_error_event(monkeypatch):
+    # ADR-18/FR-055: a Qdrant failure during retrieval must be distinguished
+    # from an LLM failure and marked retryable - this previously fell
+    # through uncaught to a non-retryable INTERNAL_ERROR (the latent gap
+    # this ADR closes).
+    _ingest_all_demo_content()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated Qdrant outage")
+
+    monkeypatch.setattr(vector_store, "query", _boom)
+
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": "How many vacation days do I get?"},
+    )
+
+    assert resp.status_code == 200
+    events = _ndjson_events(resp)
+    assert events[0]["stage"] == "SEARCHING"
+    final = events[-1]
+    assert final["stage"] == "ERROR"
+    assert final["code"] == "VECTOR_STORE_UNAVAILABLE"
+    assert final["retryable"] is True
+    assert "simulated Qdrant outage" not in final["message"]
+
+
+def test_chat_marks_removed_document_but_never_a_demo_document(monkeypatch):
+    # FR-042/ADR-18: simulates the real race this check exists for (a
+    # document deleted concurrently with an in-flight chat request that
+    # already retrieved chunks from it) by injecting a citation whose
+    # document_id has zero chunks in this test's fresh vector store, without
+    # needing actual thread concurrency. A real KB document is also uploaded
+    # so the pre-stream EMPTY_KNOWLEDGE_BASE check still passes. A second
+    # injected citation uses a real demo document_id (never ingested in this
+    # fresh in-memory store, so its real chunk count is also 0) to prove the
+    # store.is_demo_document_id exemption - not the count - is what keeps a
+    # demo citation permanently non-removed.
+    files = [("files", ("keepme.txt", b"unrelated content kept in the KB", "text/plain"))]
+    token = "is-removed-test"
+    upload_resp = _upload(files, token=token)
+    kb_id = upload_resp.json()["knowledge_base_id"]
+
+    ghost_chunk = retriever.RetrievedChunk(
+        score=5.0,
+        chunk_id="ghost_0",
+        document_id="ghost-document-id",
+        knowledge_base_id=kb_id,
+        document_name="deleted.txt",
+        chunk_index=0,
+        page=None,
+        text="This chunk's document has since been deleted from the vector store.",
+    )
+    demo_chunk = retriever.RetrievedChunk(
+        score=4.0,
+        chunk_id="01_employee_handbook_0",
+        document_id="01_employee_handbook",
+        knowledge_base_id=kb_id,
+        document_name="01_employee_handbook.md",
+        chunk_index=0,
+        page=None,
+        text="Demo content chunk - never actually ingested in this test's fresh Qdrant.",
+    )
+    monkeypatch.setattr(
+        retriever, "apply_rerank_threshold", lambda chunks, **kw: [ghost_chunk, demo_chunk]
+    )
+
+    mock_client = MagicMock()
+    resp_obj = MagicMock()
+    resp_obj.choices[0].message.content = "According to the documents [1][2]."
+    mock_client.chat.completions.create.return_value = resp_obj
+    generation.set_client(mock_client)
+
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": kb_id, "message": "anything"},
+        headers={"X-Session-Token": token},
+    )
+
+    assert resp.status_code == 200
+    final = _final_event(resp)
+    assert final["stage"] == "COMPLETED"
+    sources_by_document_id = {s["document_id"]: s["is_removed"] for s in final["sources"]}
+    assert sources_by_document_id["ghost-document-id"] is True
+    assert sources_by_document_id["01_employee_handbook"] is False
 
 
 def test_upload_writes_file_to_temp_path_with_server_generated_name():
@@ -358,7 +504,8 @@ def test_full_upload_process_ready_chat_delete_lifecycle():
         headers={"X-Session-Token": token},
     )
     assert chat_resp.status_code == 200
-    chat_body = chat_resp.json()
+    chat_body = _final_event(chat_resp)
+    assert chat_body["stage"] == "COMPLETED"
     assert "Biscuit" in chat_body["answer"]
     assert chat_body["sources"]
 
@@ -463,8 +610,9 @@ def test_kb_isolation_two_real_sessions_similar_content():
         headers={"X-Session-Token": "iso-session-a"},
     )
     assert chat_a.status_code == 200
-    assert "15" in chat_a.json()["answer"]
-    assert "22" not in chat_a.json()["answer"]
+    answer_a = _final_event(chat_a)["answer"]
+    assert "15" in answer_a
+    assert "22" not in answer_a
 
     chat_b = client.post(
         "/chat",
@@ -472,8 +620,9 @@ def test_kb_isolation_two_real_sessions_similar_content():
         headers={"X-Session-Token": "iso-session-b"},
     )
     assert chat_b.status_code == 200
-    assert "22" in chat_b.json()["answer"]
-    assert "15" not in chat_b.json()["answer"]
+    answer_b = _final_event(chat_b)["answer"]
+    assert "22" in answer_b
+    assert "15" not in answer_b
 
     # Each session can still independently chat against the shared demo KB.
     _ingest_all_demo_content()
@@ -489,7 +638,8 @@ def test_kb_isolation_two_real_sessions_similar_content():
         headers={"X-Session-Token": "iso-session-b"},
     )
     assert demo_chat_a.status_code == 200
-    assert "2FA" in demo_chat_a.json()["answer"] or "two-factor" in demo_chat_a.json()["answer"]
+    demo_answer_a = _final_event(demo_chat_a)["answer"]
+    assert "2FA" in demo_answer_a or "two-factor" in demo_answer_a
     assert demo_chat_b.status_code == 200
 
     # Session A cannot see session B's documents (or vice versa).
@@ -589,7 +739,8 @@ def test_e2e_explore_demo_ask_real_suggested_question():
     )
 
     assert chat_resp.status_code == 200
-    body = chat_resp.json()
+    body = _final_event(chat_resp)
+    assert body["stage"] == "COMPLETED"
     assert body["answer"]
     assert body["answer"] != generation.NO_CONTEXT_RESPONSE
     assert body["sources"]
@@ -621,6 +772,139 @@ def test_e2e_recover_from_bad_upload_then_succeed():
         f"/documents/{document_id}/status", headers={"X-Session-Token": token}
     )
     assert status_resp.json()["status"] == "READY"
+
+
+def test_chat_empty_conversation_history_skips_rewrite_only_one_groq_call():
+    # ADR-16: an omitted/empty conversation_history must skip Stage 6.5
+    # entirely - a single Groq call (the generation call), not two.
+    _ingest_all_demo_content()
+
+    mock_client = MagicMock()
+    resp_obj = MagicMock()
+    resp_obj.choices[0].message.content = "Full-time employees accrue 15 days of PTO per year [1]."
+    mock_client.chat.completions.create.return_value = resp_obj
+    generation.set_client(mock_client)
+
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": "How many vacation days do I get?"},
+    )
+
+    assert resp.status_code == 200
+    assert mock_client.chat.completions.create.call_count == 1
+
+
+def test_chat_conversation_history_resolves_followup_and_flows_to_generation():
+    # ADR-16 end-to-end (mocked Groq, real retrieval/rerank): a follow-up
+    # question with history triggers two Groq calls (rewrite, then
+    # generation), and the *rewritten* query - not the raw ambiguous
+    # message - is what's fed as Stage 11's QUESTION:. Also confirms a
+    # query-rewrite-triggering follow-up still streams every stage in order
+    # (ADR-18) - the rewrite happens inside the SEARCHING stage's work, not
+    # as a separate visible stage.
+    _ingest_all_demo_content()
+
+    mock_client = MagicMock()
+    rewrite_resp = MagicMock()
+    rewrite_resp.choices[0].message.content = (
+        "How many days of PTO do full-time employees accrue per year?"
+    )
+    answer_resp = MagicMock()
+    answer_resp.choices[0].message.content = (
+        "Full-time employees accrue 15 days of PTO per year [1]."
+    )
+    mock_client.chat.completions.create.side_effect = [rewrite_resp, answer_resp]
+    generation.set_client(mock_client)
+
+    resp = client.post(
+        "/chat",
+        json={
+            "knowledge_base_id": "kb_demo",
+            "message": "What about their PTO?",
+            "conversation_history": [
+                {"role": "user", "content": "Tell me about the engineering team's benefits"},
+                {
+                    "role": "assistant",
+                    "content": "Engineering employees get full health coverage [1].",
+                },
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    events = _ndjson_events(resp)
+    assert [e["stage"] for e in events] == [
+        "SEARCHING",
+        "RETRIEVING",
+        "GENERATING",
+        "VALIDATING",
+        "COMPLETED",
+    ]
+    body = events[-1]
+    assert "15" in body["answer"]
+    assert body["sources"]
+
+    assert mock_client.chat.completions.create.call_count == 2
+    _, second_kwargs = mock_client.chat.completions.create.call_args_list[1]
+    second_user_message = second_kwargs["messages"][-1]["content"]
+    assert "How many days of PTO do full-time employees accrue per year?" in second_user_message
+    assert "their PTO" not in second_user_message
+
+
+def test_chat_conversation_history_over_cap_rejected():
+    history = [{"role": "user", "content": f"turn {i}"} for i in range(9)]
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": "hi", "conversation_history": history},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_chat_conversation_history_entry_content_too_long_rejected():
+    history = [{"role": "user", "content": "x" * 2001}]
+    resp = client.post(
+        "/chat",
+        json={"knowledge_base_id": "kb_demo", "message": "hi", "conversation_history": history},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+@pytest.mark.live_groq
+def test_chat_followup_question_real_groq_and_reranker():
+    # Full real stack (no mocks): the manual-verification scenario from the
+    # ADR-16/ADR-17 implementation pass, as an automated regression - an
+    # ambiguous follow-up ("those days") must resolve against history and
+    # come back with the correct, on-topic (rollover) answer, not a generic
+    # or wrong one.
+    generation_module._client = None
+    _ingest_all_demo_content()
+
+    initial_question = "How many days of PTO do full-time employees accrue per year?"
+    initial = client.post(
+        "/chat", json={"knowledge_base_id": "kb_demo", "message": initial_question}
+    )
+    assert initial.status_code == 200
+    initial_answer = _final_event(initial)["answer"]
+    assert "15" in initial_answer
+
+    followup = client.post(
+        "/chat",
+        json={
+            "knowledge_base_id": "kb_demo",
+            "message": "How many of those days can roll over to the next year?",
+            "conversation_history": [
+                {"role": "user", "content": initial_question},
+                {"role": "assistant", "content": initial_answer},
+            ],
+        },
+    )
+
+    assert followup.status_code == 200
+    followup_body = _final_event(followup)
+    assert "5" in followup_body["answer"]
+    assert followup_body["sources"]
 
 
 def test_no_server_side_chat_message_store_exists():

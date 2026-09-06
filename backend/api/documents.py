@@ -22,6 +22,7 @@ from store import (
     get_or_create_session,
     is_demo_document_id,
     session_owns_kb,
+    touch_session_activity,
 )
 
 router = APIRouter()
@@ -121,6 +122,7 @@ async def upload_documents(
 
 @router.get("/documents/{document_id}/status", response_model=DocumentStatusResponse)
 def document_status(document_id: str, x_session_token: str | None = Header(default=None)):
+    touch_session_activity(x_session_token)
     # Demo documents are seeded offline and never pass through
     # create_document(), so the mock store has no record of them at all -
     # check this first, or a real, ready demo document incorrectly looks
@@ -151,6 +153,7 @@ def document_status(document_id: str, x_session_token: str | None = Header(defau
 
 @router.delete("/documents/{document_id}", response_model=DeleteResponse)
 def delete_document_route(document_id: str, x_session_token: str | None = Header(default=None)):
+    touch_session_activity(x_session_token)
     # Same reasoning as document_status above: a demo document_id must be
     # recognized before the mock-store lookup, so the response is the
     # documented 403 "demo documents cannot be deleted", not a misleading
