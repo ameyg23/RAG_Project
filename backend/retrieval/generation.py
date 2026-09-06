@@ -94,12 +94,15 @@ def answer_question(
 ) -> tuple[str, ChunkContext]:
     """Stage 10-12 end-to-end: gate on empty context, build prompt, generate.
 
-    `chunks` must already be the final Stage 9 output — retrieved (Stage 8),
-    reranked (Stage 8.5, ADR-17), and threshold-and-capped
-    (retriever.apply_rerank_threshold) by the caller (api/chat.py). This
-    function no longer performs retrieval itself: ADR-17 inserted a
-    reranking stage between retrieval and here, and that multi-step
-    orchestration belongs to the caller, not this module.
+    `chunks` must already be the final Stage 9 output — retrieved and
+    threshold-and-capped by the caller (api/chat.py's retriever.retrieve()
+    call, which folds Stage 8's similarity search and Stage 9's
+    MIN_SIMILARITY_SCORE threshold/top_k cap into one call). This function
+    does not perform retrieval itself — that orchestration belongs to the
+    caller, not this module. (ADR-17 briefly inserted a reranking stage
+    between retrieval and here; it was reverted — see
+    docs/ARCHITECTURE_DECISIONS.md ADR-17's "Reverted" note — so `chunks`
+    is once again plain similarity-search output, not reranked output.)
 
     `question` must be the Stage 6.5 rewritten (standalone) query, not
     necessarily the user's raw original message — see ADR-16 for why the
@@ -108,10 +111,10 @@ def answer_question(
     to what the LLM is asked to answer).
 
     Layer 1 of the grounding strategy lives here: if `chunks` is empty
-    (retrieval found nothing, or nothing survived Stage 8's similarity
-    pre-filter or Stage 9's rerank-score threshold), this returns
-    NO_CONTEXT_RESPONSE and never calls generate() / Groq at all - not just
-    a similar-looking message, a genuine short-circuit.
+    (retrieval found nothing, or nothing survived Stage 8/9's
+    MIN_SIMILARITY_SCORE threshold), this returns NO_CONTEXT_RESPONSE and
+    never calls generate() / Groq at all - not just a similar-looking
+    message, a genuine short-circuit.
     """
     if not chunks:
         return NO_CONTEXT_RESPONSE, ChunkContext(context_text="", citation_map={})

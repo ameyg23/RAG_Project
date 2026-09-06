@@ -78,8 +78,7 @@ backend/
     vector_store.py         # Qdrant client adapter (ADR-07, ADR-14)
     query_rewrite.py         # Stage 6.5: Groq call resolving follow-ups against
                               # client-supplied history, not persisted (ADR-16)
-    retriever.py             # similarity search (widened candidate pool) + KB filter
-    reranker.py               # Stage 8.5: local cross-encoder rerank (ADR-17)
+    retriever.py             # similarity search + threshold/cap + KB filter
     generation.py             # prompt construction + Groq call (ADR-08)
   models/
     schemas.py               # Pydantic request/response models (source of docs/API.md)
@@ -133,10 +132,13 @@ sequenceDiagram
 
 ## 6. Query Architecture
 
-*(Updated for ADR-16/ADR-17 — query rewriting and reranking — and ADR-18 —
-streamed progress reporting. The pipeline logic below is unchanged from
-ADR-16/17; ADR-18 only adds NDJSON progress events (`A-->>U` lines) at each
-stage boundary.)*
+*(Updated for ADR-16 — query rewriting — and ADR-18 — streamed progress
+reporting. ADR-17 briefly added a reranking stage between vector search and
+generation; it was reverted (see `docs/ARCHITECTURE_DECISIONS.md` ADR-17's
+"Reverted" note — a Render free-tier 512MB RAM constraint), so the diagram
+below reflects retrieval going straight from Qdrant search to threshold/cap
+with no reranker in between. ADR-18 adds NDJSON progress events (`A-->>U`
+lines) at each stage boundary.)*
 
 ```mermaid
 sequenceDiagram
@@ -145,7 +147,6 @@ sequenceDiagram
     participant R as Query Rewrite (Groq)
     participant M as Embedding (BGE)
     participant Q as Qdrant
-    participant X as Reranker (cross-encoder)
     participant L as Groq LLM
 
     U->>A: POST {knowledge_base_id, message, conversation_history?} (pre-stream checks pass — FR-056/403/404/400 handled as plain JSON before this point, ADR-18)
@@ -158,17 +159,14 @@ sequenceDiagram
         A->>A: rewritten_query = message
     end
     A->>M: embed(rewritten_query)
-    M->>Q: search(vector, filter: knowledge_base_id, top_k=20)
-    Q-->>A: up to 20 candidate chunks + cosine scores (pre-filtered by MIN_SIMILARITY_SCORE)
+    M->>Q: search(vector, filter: knowledge_base_id, top_k=5)
+    Q-->>A: up to 5 candidate chunks + cosine scores, filtered by MIN_SIMILARITY_SCORE
     A-->>U: {"stage": "RETRIEVING"}
-    A->>X: rerank(rewritten_query, candidates)
-    X-->>A: candidates re-scored + re-sorted
-    A->>A: threshold on MIN_RERANK_SCORE, cap at top_n
     A-->>U: {"stage": "GENERATING"}
-    alt best rerank score below MIN_RERANK_SCORE
+    alt no chunks survived MIN_SIMILARITY_SCORE
         A->>A: NO_CONTEXT_RESPONSE, Groq never called (FR-022)
     else
-        A->>A: build grounded prompt from top-N reranked chunks, question=rewritten_query
+        A->>A: build grounded prompt from usable chunks, question=rewritten_query
         A->>L: generate(prompt)
         L-->>A: answer text
     end

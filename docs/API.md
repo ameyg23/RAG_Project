@@ -404,7 +404,7 @@ the authoritative list, kept in sync with `backend/errors.py` usage):
 | `DOCUMENT_NOT_FOUND` | 404 | `GET /documents/{id}/status`, `DELETE /documents/{id}` |
 | `EMPTY_KNOWLEDGE_BASE` | 503 | `POST /chat` — target KB has zero `READY` documents (FR-056); checked before the stream opens |
 | `LLM_UNAVAILABLE` | 200 + mid-stream `{"stage": "ERROR", "retryable": true}` (ADR-18) | `POST /chat` — Groq dependency failure (FR-054). No longer a `502` — the stream has already started by the time Groq is called, so the HTTP status cannot change; the frontend maps this event to the exact same retryable-error UI a `502` used to (see ADR-18) |
-| `VECTOR_STORE_UNAVAILABLE` | 200 + mid-stream `{"stage": "ERROR", "retryable": true}` (ADR-18) | `POST /chat` — embedding/retrieval/rerank stage failure, i.e. Qdrant unreachable after its own internal retries (FR-055), distinguished from `LLM_UNAVAILABLE` per FR-055's wording. New in ADR-18 — previously fell through uncaught to `INTERNAL_ERROR`/non-retryable, which did not satisfy FR-055 |
+| `VECTOR_STORE_UNAVAILABLE` | 200 + mid-stream `{"stage": "ERROR", "retryable": true}` (ADR-18) | `POST /chat` — embedding/retrieval stage failure, i.e. Qdrant unreachable after its own internal retries (FR-055), distinguished from `LLM_UNAVAILABLE` per FR-055's wording. New in ADR-18 — previously fell through uncaught to `INTERNAL_ERROR`/non-retryable, which did not satisfy FR-055 |
 | `INTERNAL_ERROR` | 500 (pre-stream) or 200 + mid-stream `{"stage": "ERROR", "retryable": false}` (ADR-18, once `/chat` has started streaming) | Any endpoint — unexpected server error, sanitized per `docs/SECURITY.md` (Error Leakage); the global fallback for anything not covered by a more specific code above |
 
 ## Cross-Cutting Rules

@@ -691,6 +691,32 @@ migration path), so either change is contained to one module.
 
 ## ADR-17: Reranking — Local Cross-Encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`)
 
+**REVERTED (2026-09-06):** the deployed Render free-tier instance (512MB
+RAM) OOM-crashed under a real, live `/chat` request — confirmed directly:
+`/health` and `/chat` both returned 502 mid-request, then Render
+auto-restarted the process. Root cause: loading both the embedding model
+(`BAAI/bge-small-en-v1.5`) *and* this ADR's reranker
+(`cross-encoder/ms-marco-MiniLM-L-6-v2`) into memory at once, on top of the
+CPU-torch/transformers/FastAPI overhead already established in ADR-03/06,
+exceeds 512MB — the exact risk this ADR's own "Disadvantages" section
+flagged as "expected to still fit... but not verified in this ADR." The
+user was given the real tradeoffs (pay for Render Standard's 2GB RAM
+instead of the free tier; invest in a bigger free ONNX/quantized-model
+rewrite; or drop reranking and keep only embedding-based retrieval) and
+explicitly chose to drop reranking and stay on the free tier, accepting
+the `no_context_precision` regression this ADR had fixed (1.0 back down to
+its pre-ADR-17 baseline of 0.6, `evaluation/results/20260906T052601Z.json`)
+as a known, accepted consequence of that choice rather than a bug. The
+revert removed `backend/retrieval/reranker.py` entirely, reverted
+`retriever.py`'s `TOP_K` (20→5) and removed `TOP_N`/`MIN_RERANK_SCORE`/
+`apply_rerank_threshold()`, and removed the Stage 8.5 rerank call from
+`api/chat.py`'s orchestration — `MIN_SIMILARITY_SCORE` (unchanged at 0.45)
+is once again the sole, final retrieval gate. Query rewriting (ADR-16) and
+NDJSON streaming (ADR-18) were untouched by this revert — both are fully
+independent of reranking. The rest of this ADR's content is preserved
+below as the historical record of what was tried and why, per this
+project's established practice of not deleting superseded decisions.
+
 **Decision:** retrieval widens its initial candidate pool from Qdrant, a
 local cross-encoder reranks that pool, and only the reranked top-N chunks
 reach the LLM — inserted as a new Stage 8.5 in `docs/RAG_PIPELINE.md`,
@@ -900,7 +926,7 @@ those needs progress reporting (they're known before any real work starts).
 | UI stage | Label | Backend work covered | Code location |
 |---|---|---|---|
 | `SEARCHING` | "Searching documents…" | Stage 6.5 (query rewrite) + Stage 7 (embed) + Stage 8 (candidate-pool vector search) | `chat.py`: `query_rewrite.rewrite_query`, `embed_query`, `retriever.retrieve` |
-| `RETRIEVING` | "Retrieving relevant information…" | Stage 8.5 (cross-encoder rerank) + Stage 9 (threshold + cap) | `chat.py`: `reranker.rerank`, `retriever.apply_rerank_threshold` |
+| `RETRIEVING` | "Retrieving relevant information…" | Stage 9 (`MIN_SIMILARITY_SCORE` threshold + cap — ADR-17's reranking step was reverted; see ADR-17's "Reverted" note) | `chat.py`: `retriever.retrieve` |
 | `GENERATING` | "Generating answer…" | Stage 10 (context construction) + Stage 11 (prompt) + Stage 12 (Groq call) | `generation.answer_question` |
 | `VALIDATING` | "Checking sources…" | Stage 14 (citation resolution) + **new**: per-cited-document existence check | `generation.build_sources` + new `chat.py` helper (see below) |
 

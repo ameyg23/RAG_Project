@@ -8,7 +8,7 @@ from ingestion.chunk import DocumentChunk, chunk_document
 from ingestion.embed import embed_query, embed_texts
 from ingestion.extract import extract_and_clean
 from retrieval import vector_store
-from retrieval.retriever import RetrievedChunk, apply_rerank_threshold, build_context, retrieve
+from retrieval.retriever import RetrievedChunk, build_context, retrieve
 
 DEMO_CONTENT = Path(__file__).parent.parent / "demo_content"
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -193,41 +193,3 @@ def test_retrieve_respects_knowledge_base_isolation():
 
     assert results_a and all(r.knowledge_base_id == "kb_a" for r in results_a)
     assert results_b and all(r.knowledge_base_id == "kb_b" for r in results_b)
-
-
-# --- Stage 9 (modified, ADR-17): apply_rerank_threshold ---------------------
-
-
-def test_apply_rerank_threshold_excludes_below_threshold_chunks():
-    chunks = [_make_chunk(0, score=5.0), _make_chunk(1, score=-2.0), _make_chunk(2, score=1.0)]
-    result = apply_rerank_threshold(chunks, min_rerank_score=0.0, top_n=5)
-    assert [c.chunk_id for c in result] == ["doc_0", "doc_2"]
-
-
-def test_apply_rerank_threshold_caps_at_top_n():
-    chunks = [_make_chunk(i, score=10.0 - i) for i in range(8)]
-    result = apply_rerank_threshold(chunks, min_rerank_score=-100.0, top_n=3)
-    assert len(result) == 3
-    assert [c.chunk_id for c in result] == ["doc_0", "doc_1", "doc_2"]
-
-
-def test_apply_rerank_threshold_does_not_re_sort_input():
-    # Stage 9 trusts Stage 8.5's ordering - it must not silently re-sort a
-    # caller-provided list that happens to be out of order, since that would
-    # mask a bug in the reranker rather than surface it.
-    out_of_order = [_make_chunk(0, score=1.0), _make_chunk(1, score=9.0)]
-    result = apply_rerank_threshold(out_of_order, min_rerank_score=0.0, top_n=5)
-    assert [c.chunk_id for c in result] == ["doc_0", "doc_1"]
-
-
-def test_apply_rerank_threshold_empty_input_returns_empty():
-    assert apply_rerank_threshold([]) == []
-
-
-def test_apply_rerank_threshold_defaults_match_module_constants():
-    from retrieval.retriever import MIN_RERANK_SCORE, TOP_N
-
-    chunks = [_make_chunk(i, score=100.0 - i) for i in range(10)]
-    result = apply_rerank_threshold(chunks)
-    assert len(result) == min(TOP_N, len(chunks))
-    assert all(c.score >= MIN_RERANK_SCORE for c in result)

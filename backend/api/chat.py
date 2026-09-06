@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from errors import ApiError
 from ingestion.embed import embed_query
 from models.schemas import ChatRequest
-from retrieval import generation, query_rewrite, reranker, retriever, vector_store
+from retrieval import generation, query_rewrite, retriever, vector_store
 from store import (
     DEMO_KB_ID,
     is_demo_document_id,
@@ -100,10 +100,14 @@ def _stream_chat(*, kb_id: str, message: str, history: list[dict]) -> Generator[
         # deliberately NOT inside the VECTOR_STORE_UNAVAILABLE zone below.
         rewritten_query = query_rewrite.rewrite_query(message, history)
         try:
-            # Stage 7 (query embedding) + Stage 8 (widened candidate-pool
-            # similarity search, KB-filtered).
+            # Stage 7 (query embedding) + Stage 8 (similarity search) +
+            # Stage 9 (MIN_SIMILARITY_SCORE threshold + top_k cap) - all
+            # folded into retriever.retrieve() (ADR-17's reranking stage
+            # was reverted, see docs/ARCHITECTURE_DECISIONS.md ADR-17's
+            # "Reverted" note; there is no longer a wider candidate pool or
+            # a separate rerank threshold between search and here).
             query_vector = embed_query(rewritten_query)
-            candidates = retriever.retrieve(query_vector, knowledge_base_id=kb_id)
+            usable_chunks = retriever.retrieve(query_vector, knowledge_base_id=kb_id)
         except Exception:
             logger.exception("Vector store failure during /chat SEARCHING stage")
             yield _error_event(
@@ -114,19 +118,6 @@ def _stream_chat(*, kb_id: str, message: str, history: list[dict]) -> Generator[
             return
 
         yield _event({"stage": "RETRIEVING"})
-        try:
-            # Stage 8.5 (cross-encoder rerank, ADR-17) + Stage 9 (rerank-
-            # score threshold + top_n cap, modified by ADR-17).
-            reranked = reranker.rerank(rewritten_query, candidates)
-            usable_chunks = retriever.apply_rerank_threshold(reranked)
-        except Exception:
-            logger.exception("Vector store failure during /chat RETRIEVING stage")
-            yield _error_event(
-                "VECTOR_STORE_UNAVAILABLE",
-                "The knowledge base search is temporarily unavailable. Please try again shortly.",
-                retryable=True,
-            )
-            return
 
         yield _event({"stage": "GENERATING"})
         try:

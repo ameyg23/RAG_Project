@@ -385,9 +385,7 @@ def test_chat_marks_removed_document_but_never_a_demo_document(monkeypatch):
         page=None,
         text="Demo content chunk - never actually ingested in this test's fresh Qdrant.",
     )
-    monkeypatch.setattr(
-        retriever, "apply_rerank_threshold", lambda chunks, **kw: [ghost_chunk, demo_chunk]
-    )
+    monkeypatch.setattr(retriever, "retrieve", lambda *a, **kw: [ghost_chunk, demo_chunk])
 
     mock_client = MagicMock()
     resp_obj = MagicMock()
@@ -795,7 +793,7 @@ def test_chat_empty_conversation_history_skips_rewrite_only_one_groq_call():
 
 
 def test_chat_conversation_history_resolves_followup_and_flows_to_generation():
-    # ADR-16 end-to-end (mocked Groq, real retrieval/rerank): a follow-up
+    # ADR-16 end-to-end (mocked Groq, real retrieval): a follow-up
     # question with history triggers two Groq calls (rewrite, then
     # generation), and the *rewritten* query - not the raw ambiguous
     # message - is what's fed as Stage 11's QUESTION:. Also confirms a
@@ -872,9 +870,9 @@ def test_chat_conversation_history_entry_content_too_long_rejected():
 
 
 @pytest.mark.live_groq
-def test_chat_followup_question_real_groq_and_reranker():
+def test_chat_followup_question_real_groq():
     # Full real stack (no mocks): the manual-verification scenario from the
-    # ADR-16/ADR-17 implementation pass, as an automated regression - an
+    # ADR-16 implementation pass, as an automated regression - an
     # ambiguous follow-up ("those days") must resolve against history and
     # come back with the correct, on-topic (rollover) answer, not a generic
     # or wrong one.
