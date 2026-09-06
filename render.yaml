@@ -14,7 +14,7 @@ services:
       - key: QDRANT_API_KEY
         sync: false
       - key: CORS_ALLOWED_ORIGIN
-        value: http://localhost:5173
+        value: https://rag-chatbot-frontend-b7i.pages.dev
       # Cap numpy/scipy/onnxruntime's BLAS thread pools (ADR-20: the
       # embedding runtime moved from sentence-transformers/torch to
       # fastembed/ONNX Runtime, but this same cap still applies). On a
