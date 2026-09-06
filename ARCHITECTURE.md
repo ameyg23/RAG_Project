@@ -11,11 +11,11 @@ flowchart LR
         UI["React + Vite SPA\n(Cloudflare Pages)"]
     end
 
-    subgraph Backend["FastAPI Backend (Google Cloud Run free tier, ADR-19)"]
+    subgraph Backend["FastAPI Backend (Render free tier, ADR-20)"]
         API["REST API layer"]
         ING["Ingestion pipeline"]
         RET["Retrieval + generation pipeline"]
-        EMB["Local embedding model\n(sentence-transformers)"]
+        EMB["Local embedding model\n(fastembed / ONNX Runtime)"]
     end
 
     subgraph External["External free-tier services"]
@@ -72,7 +72,7 @@ backend/
   ingestion/
     extract.py             # text extraction per file type
     chunk.py               # LangChain text splitters (ADR-05)
-    embed.py                # sentence-transformers wrapper (ADR-06)
+    embed.py                # fastembed/ONNX Runtime wrapper (ADR-06, ADR-20)
     pipeline.py             # orchestrates extract→chunk→embed→upsert, BackgroundTasks (ADR-13)
   retrieval/
     vector_store.py         # Qdrant client adapter (ADR-07, ADR-14)
@@ -216,7 +216,7 @@ flowchart TB
     end
 
     FE_SRC -- "Cloudflare Pages\nbuild: vite build" --> CFP["Cloudflare Pages\n(static hosting, free)"]
-    BE_SRC -- "Cloud Build\nbuild: backend/Dockerfile" --> RUN["Cloud Run service\n(FastAPI, min-instances=0, scales to zero)"]
+    BE_SRC -- "Render native buildpack\nbuild: pip install -r requirements.txt" --> RUN["Render web service\n(FastAPI, sleeps after 15min idle)"]
 
     CFP -- "HTTPS fetch\n(CORS-restricted to CFP origin)" --> RUN
     RUN -- "API key from env vars" --> GROQ["Groq API (free tier)"]
@@ -225,12 +225,17 @@ flowchart TB
     Visitor(("Visitor browser")) --> CFP
 ```
 
-Backend hosting moved from Render to Google Cloud Run (ADR-19) after
-Render's free-tier 512MB RAM ceiling proved insufficient for real `/chat`
-request load even after the ADR-17 reranker revert; `render.yaml` remains
-in the repository as a documented paid-tier fallback. Deployment sequence,
-environment variables, and cost model are fully specified in
-`docs/DEPLOYMENT.md` and `docs/ENVIRONMENT.md`.
+Backend hosting briefly moved from Render to Google Cloud Run (ADR-19)
+after Render's free-tier 512MB RAM ceiling proved insufficient for real
+`/chat` request load even after the ADR-17 reranker revert — but the actual
+driver turned out to be the `sentence-transformers`/PyTorch embedding
+runtime itself, not the platform. ADR-20 replaced that runtime with
+`fastembed`/ONNX Runtime (~191MB RSS measured under real inference) and
+moved hosting back to Render, the user's preferred platform;
+`backend/Dockerfile`/Cloud Run (ADR-19) remains in the repository as a
+documented fallback if a future feature ever outgrows Render's free tier
+again. Deployment sequence, environment variables, and cost model are
+fully specified in `docs/DEPLOYMENT.md` and `docs/ENVIRONMENT.md`.
 
 ## 10. Security Boundaries
 

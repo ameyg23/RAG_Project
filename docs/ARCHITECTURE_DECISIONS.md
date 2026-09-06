@@ -1113,6 +1113,23 @@ right shape to add a `request.is_disconnected()` check between stages
 
 ## ADR-19: Backend Hosting — Google Cloud Run (supersedes ADR-10's Render)
 
+**SUPERSEDED (2026-09-06), back to Render — see ADR-20:** the user
+explicitly chose not to take on a Google Cloud account for this project and
+asked instead for the actual root cause (memory, not platform) to be fixed
+so the app could stay on Render. ADR-20 replaces the embedding runtime
+(sentence-transformers/torch → fastembed/ONNX Runtime), which turned out to
+be the real fix this ADR's own "Why this happened" section was one
+diagnostic step short of: it correctly identified that the *embedding
+model* (not the reranker) was the memory driver, but concluded the fix had
+to be a bigger-RAM platform, without separately testing whether a
+non-PyTorch runtime for that same model would fit Render's free tier
+instead. It does. Backend hosting reverts to Render (`render.yaml`,
+already prepared and untouched this whole time); `backend/Dockerfile` and
+this ADR's content are preserved below, unused for now, as a documented
+option if a future memory increase (e.g. reranking coming back) ever
+outgrows Render's free tier again — per this project's established practice
+of not deleting superseded infrastructure decisions.
+
 **Decision:** Move the backend off Render's free web service onto Google
 Cloud Run, deployed via Cloud Run's "continuously deploy from a repository"
 flow (Cloud Build reading a new `backend/Dockerfile`), rather than staying
@@ -1240,3 +1257,140 @@ since the container image itself is the portable unit.
 Render section marked superseded), `docs/ENVIRONMENT.md` (Cloud Run env var
 notes), `ARCHITECTURE.md` §1/§9 (deployment diagrams). `render.yaml` is
 explicitly untouched (kept as the documented paid-tier fallback).
+
+---
+
+## ADR-20: Embedding Runtime — fastembed/ONNX Runtime (supersedes ADR-06's
+sentence-transformers/torch; reverts ADR-19 back to Render)
+
+**Decision:** Run the local embedding model (`BAAI/bge-small-en-v1.5`,
+unchanged, ADR-06) via `fastembed` — Qdrant's own embedding library, which
+loads a quantized ONNX build of the same model through `onnxruntime` —
+instead of `sentence-transformers`/PyTorch. No other part of the RAG
+pipeline changes: same model weights (a quantized export of the same
+checkpoint), same 384-dim vector space, same manually-applied BGE
+query-instruction prefix (`embed.py`'s `QUERY_INSTRUCTION_PREFIX`), same
+public `embed_texts()`/`embed_query()` function signatures used by every
+call site (`ingestion/pipeline.py`, `scripts/seed_demo_kb.py`,
+`api/chat.py`).
+
+**Why this happened — evidence, not speculation:** ADR-19 correctly
+diagnosed that the embedding model alone (not the already-reverted
+reranker, ADR-17) was enough to exceed Render free tier's 512MB RAM ceiling
+under real `/chat` request load, and concluded from that evidence that the
+fix had to be a bigger-RAM hosting platform (Google Cloud Run). The user
+explicitly declined that path — no interest in creating/managing a Google
+Cloud account for a portfolio project — and asked instead whether the
+actual memory driver could be reduced directly. It could: PyTorch itself
+(not the model weights) was never isolated as a variable in ADR-19's
+investigation. Measured directly this session: loading the fastembed model
+and running a real query embedding plus an 8-chunk batch embed in the same
+process totals **~191MB RSS** (18MB baseline → 175MB after model load →
+191MB after real inference) — comfortably under the 512MB ceiling with
+room for FastAPI/uvicorn/Groq-client/Qdrant-client overhead on top, which
+is the same overhead ADR-19 observed already resident alongside the
+torch-based model when Render 502'd. A genuinely fresh `pip install -r
+requirements.txt` into an empty venv (verified this session) now pulls in
+`fastembed`+`onnxruntime` and nothing else in that dependency family — no
+`torch`, no `transformers`, no `sentence-transformers` — confirming this
+isn't a partial reduction that still carries the old weight transitively.
+
+**Options considered:**
+1. Keep `sentence-transformers`/torch; shrink further (smaller model,
+   quantization, lazy-unload-after-request) — this is exactly ADR-19's
+   rejected Option 1, and for the same reason: still carries PyTorch's own
+   base memory cost regardless of model size, which the measurement above
+   shows is not actually necessary to pay at all.
+2. Move embeddings to a free hosted API, dropping local inference entirely
+   — rejected: reverses ADR-06's "local embeddings, no external API/rate
+   limit" decision, and the fastembed measurement above shows the ADR-06
+   goal is achievable without that tradeoff.
+3. `fastembed`/ONNX Runtime, same model (chosen).
+
+**Selected:** Option 3.
+
+**Reason:** Directly addresses the measured root cause (PyTorch's own
+resident memory footprint, not model size or reranking) with the smallest
+possible blast radius — one module (`backend/ingestion/embed.py`) and one
+dependency line (`backend/requirements.txt`) change; every other pipeline
+stage, the Qdrant collection's vector dimensionality, and every call site's
+function signature are untouched. Keeps ADR-06's "local, no external API"
+property intact, unlike Option 2. Lets backend hosting revert to Render
+(the user's stated preference) instead of adopting a new cloud provider
+account purely to work around a dependency choice.
+
+**What changes:**
+- `backend/requirements.txt`: removed `torch==2.14.0+cpu` (and its
+  `--extra-index-url` CPU-wheel pin) and `sentence-transformers==3.3.1`;
+  added `fastembed==0.8.0`.
+- `backend/ingestion/embed.py`: `get_model()` now constructs a fastembed
+  `TextEmbedding(model_name=..., threads=1)` instead of a
+  `SentenceTransformer`; `embed_texts()` calls fastembed's `.embed()`
+  instead of `.encode()`. `threads=1` mirrors the existing
+  `OMP_NUM_THREADS=1`-style BLAS-thread-pool cap already applied elsewhere
+  around this model (`render.yaml`, `backend/Dockerfile`) — one more
+  thread pool would add memory for negligible speed gain on a single
+  shared free-tier vCPU. The query-instruction prefix is still applied
+  manually in `embed_query()`, not via fastembed's own model-specific
+  `query_embed()` method, so this exact, already-evaluated prefix behavior
+  is unchanged by the runtime swap rather than depending on fastembed's own
+  (undocumented, per-model) prefix logic.
+- Backend hosting reverts to Render (`render.yaml`); ADR-19's Cloud Run
+  path (`backend/Dockerfile`) is kept, unused, as a documented fallback —
+  see ADR-19's superseded note.
+- **Demo KB reseeded:** `backend/scripts/seed_demo_kb.py` was re-run
+  against the live Qdrant Cloud cluster this session so `kb_demo`'s stored
+  chunk vectors are embedded with the new fastembed runtime, matching the
+  runtime that will embed future queries against them (same 23 chunks,
+  same deterministic point IDs — an idempotent overwrite, not new data).
+  Any other knowledge base (a user's uploaded-session KB) is embedded
+  fresh at upload time either way, so no reseed is needed there.
+
+**What does not change:** the RAG pipeline's stages, chunking, retrieval
+thresholds, prompt construction, generation, and citation logic are
+completely untouched — this is purely a swap of which library performs the
+embedding computation, not what is computed. `docs/RAG_EVALUATION.md`'s
+methodology is unchanged; a fresh evaluation run to confirm quality holds
+under the new runtime was attempted this session but blocked by Groq's
+free-tier daily token quota being exhausted mid-run (a real, observed `429
+rate_limit_exceeded` from Groq, unrelated to this change) — see
+`docs/RAG_EVALUATION.md`/`README.md` for the honest current state of that
+re-validation. What *is* independently verified this session: all 8
+`test_embed.py` unit tests (dimensionality, determinism, prefix
+correctness, semantic-similarity ordering on real demo content) and the
+full backend suite (157 tests) pass unchanged against the new runtime, and
+one live end-to-end `/chat` call against the reseeded demo KB returned the
+correct grounded, cited answer.
+
+**Advantages:** removes the single largest dependency (and its transitive
+`transformers`/`safetensors`/CUDA-adjacent tooling) from the backend
+entirely; measured ~191MB RSS in the same scenario that previously
+OOM'd/502'd on Render; keeps the project on Render (no new cloud account);
+keeps ADR-06's "local, no external API" property; smaller Docker/venv
+install footprint as a side effect (faster CI/build installs too).
+
+**Disadvantages:** `fastembed`'s ONNX export is a quantized version of the
+original checkpoint, not the exact same floating-point weights
+`sentence-transformers` loaded — a theoretical (not measured-significant
+here) precision difference in embedding vectors; per fastembed's own model
+card, `BAAI/bge-small-en-v1.5` is documented as a model where the
+query-instruction prefix is "not so necessary," a milder claim than the
+original model card's own recommendation — this project keeps applying the
+prefix regardless (see "What changes" above) rather than relying on that
+weaker guidance, so this is a difference in documentation confidence, not
+in this project's actual behavior.
+
+**Free-tier implications:** $0, no card entered anywhere — unchanged.
+
+**Future migration:** if a future feature (e.g. reranking returning, ADR-17)
+pushes memory back over Render's free-tier ceiling even with this lighter
+runtime, ADR-19's Cloud Run path is preserved and ready (`backend/Dockerfile`
+already exists, untouched) as the next fallback before considering a paid
+Render tier.
+
+**Files touched by this ADR's implementation:** `backend/requirements.txt`,
+`backend/ingestion/embed.py`, `backend/scripts/seed_demo_kb.py` (re-run
+against live Qdrant, not code-changed), `docs/DEPLOYMENT.md` (Render section
+restored as current), `docs/RAG_PIPELINE.md` (embedding stage description),
+`ROADMAP.md` (Phase 21 status note), `README.md` (tech stack, evaluation,
+limitations).

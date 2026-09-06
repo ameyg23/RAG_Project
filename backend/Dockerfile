@@ -1,11 +1,15 @@
 # syntax=docker/dockerfile:1
 #
-# Cloud Run deployment image (ADR-19). Built automatically by Cloud Build via
-# Cloud Run's "continuously deploy from a repository" flow — see
-# docs/DEPLOYMENT.md's "Backend — Google Cloud Run" section for the exact
-# console steps, in particular the build-context/source-location setting
-# (must point at `backend/`, since this Dockerfile lives here, not at the
-# repo root).
+# Cloud Run deployment image (ADR-19) — a documented FALLBACK, not the
+# current deploy target as of ADR-20 (backend hosting reverted to Render,
+# `render.yaml`, once the real memory driver was fixed directly instead of
+# switching platforms). Kept, unused, in case a future feature ever pushes
+# memory back over Render's free-tier ceiling. If this path is picked back
+# up: built automatically by Cloud Build via Cloud Run's "continuously
+# deploy from a repository" flow — see docs/DEPLOYMENT.md's "Backend —
+# Google Cloud Run" section for the exact console steps, in particular the
+# build-context/source-location setting (must point at `backend/`, since
+# this Dockerfile lives here, not at the repo root).
 #
 # Python version: 3.13, matching backend/pyproject.toml's
 # `target-version = "py313"` and .github/workflows/ci.yml's pinned
@@ -19,13 +23,13 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Cap torch/numpy/scipy's BLAS thread pools — identical rationale and values
-# to render.yaml's env vars: each unbounded OpenMP/MKL/OpenBLAS thread pool
-# adds its own stack + arena memory on top of model weights, and Cloud Run's
-# CPU allocation (whole or fractional vCPUs depending on the chosen tier)
-# gains negligible speed from multithreading here anyway. No behavior change,
-# same memory-safety motivation that (independently of this) prompted the
-# ADR-17 reranker revert.
+# Cap numpy/scipy/onnxruntime's BLAS/thread pools — identical rationale and
+# values to render.yaml's env vars: each unbounded OpenMP/MKL/OpenBLAS thread
+# pool adds its own stack + arena memory on top of model weights, and Cloud
+# Run's CPU allocation (whole or fractional vCPUs depending on the chosen
+# tier) gains negligible speed from multithreading here anyway. No behavior
+# change, same memory-safety motivation that (independently of this)
+# prompted the ADR-17 reranker revert and the ADR-20 embedding-runtime swap.
 ENV OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1
@@ -36,10 +40,10 @@ WORKDIR /app
 # Build's layer cache is reused across source-only changes (only
 # requirements.txt changing invalidates this layer).
 #
-# requirements.txt pins the CPU-only torch wheel via
-# --extra-index-url https://download.pytorch.org/whl/cpu (see that file's
-# own comment) — verified current as of this Dockerfile's authoring
-# (torch==2.14.0+cpu); nothing here overrides or duplicates that pin.
+# requirements.txt installs `fastembed` (ONNX Runtime) for local embeddings
+# as of ADR-20 — no torch/CUDA wheel pin needed here at all (that pin was
+# removed along with sentence-transformers/torch; see requirements.txt's
+# own comment and ADR-20 for why).
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

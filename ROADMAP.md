@@ -687,13 +687,27 @@ success, etc.).
 backed by the real deployed Render backend, Qdrant cluster, and Groq API —
 all on free tiers, no payment method entered anywhere.
 
-**Status note:** deliberately deferred, not blocked by anything technical.
-This phase requires creating accounts (GitHub to host the repo — no git
-remote exists yet — plus Render and Cloudflare Pages), which is outside
-what Claude can do autonomously. The user has chosen to hold off:
-additional UI changes are planned first, and deployment will follow once
-those land. `render.yaml` (repo root) is already prepared so the Render
-side of this phase is a one-step Blueprint deploy once an account exists.
+**Status note (updated 2026-09-06):** deployment was actually attempted
+since this note was last written, not held off as originally planned — the
+frontend was redesigned, reranking (ADR-16/17) and NDJSON chat-progress
+streaming (ADR-18) were added, and the backend was really deployed to
+Render. It hit a real, live OOM: Render's free-tier 512MB RAM ceiling was
+too small for `sentence-transformers`/CPU-torch embedding inference under
+real request load, even after ADR-17's reranker revert. The backend was
+then migrated to Google Cloud Run (ADR-19) to get more RAM headroom — but
+the user explicitly didn't want a Google Cloud account for this project and
+asked for the actual memory driver to be fixed instead. ADR-20 did that:
+swapped the embedding runtime to `fastembed`/ONNX Runtime (same model, no
+PyTorch dependency), measured at ~191MB RSS under real inference — well
+under 512MB — and backend hosting reverted to Render. The demo KB has been
+reseeded with the new embedding runtime's vectors, and the full test suite
+(157 tests) and a live local `/chat` request both pass against it. **Still
+not done:** an actual live Render redeploy with this code and a fresh smoke
+test against the public URL haven't happened yet in this pass — that's the
+remaining step to close this phase for real, plus the frontend's Cloudflare
+Pages deploy. `backend/Dockerfile`/Cloud Run (ADR-19) is kept as a
+documented fallback, not deleted, in case a future feature ever outgrows
+Render's free tier again.
 
 ---
 

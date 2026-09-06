@@ -88,15 +88,19 @@ free-tier 512MB RAM constraint) and no longer exists as a pipeline stage.
 ### 5. Embedding
 
 - **Input:** chunk text strings (batched).
-- **Processing:** local inference via `sentence-transformers`, batched (e.g.
-  32 chunks per batch) to bound peak memory on the free-tier instance.
+- **Processing:** local inference via `fastembed` (ONNX Runtime), batched
+  (e.g. 32 chunks per batch) to bound peak memory on the free-tier instance.
 - **Output:** 384-dim float vector per chunk.
-- **Technology:** `sentence-transformers/BAAI/bge-small-en-v1.5` (ADR-06;
-  this document previously said `all-MiniLM-L6-v2`, which was the originally
-  planned model — a later migration swapped to BGE to fix short-document/
-  resume recall, and this doc was not updated at the time. Corrected here;
-  see ADR-06's model note and `backend/retrieval/retriever.py`'s docstring
-  for the full empirical record), CPU.
+- **Technology:** `BAAI/bge-small-en-v1.5` (ADR-06; this document previously
+  said `all-MiniLM-L6-v2`, which was the originally planned model — a later
+  migration swapped to BGE to fix short-document/resume recall, and this
+  doc was not updated at the time. Corrected here; see ADR-06's model note
+  and `backend/retrieval/retriever.py`'s docstring for the full empirical
+  record), CPU, run via `fastembed`/ONNX Runtime rather than
+  `sentence-transformers`/PyTorch as of ADR-20 — same model weights
+  (quantized ONNX export), no PyTorch dependency, fixing a real Render
+  free-tier OOM this model's original torch-based runtime caused under
+  live request load.
 - **Failure modes:** out-of-memory on a very large batch (mitigated by
   batching); model not yet loaded on a cold start (first request pays load
   latency — model is loaded once at process startup, not per-request, to

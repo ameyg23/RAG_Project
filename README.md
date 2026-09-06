@@ -1,11 +1,16 @@
 # RAG Chatbot
 
-> **Status: implemented and tested locally, not yet deployed.** Every
-> feature below is real and verified (132 backend tests, 23 frontend tests,
-> a real evaluation run against live Groq — see Evaluation below). Public
-> deployment (`ROADMAP.md` Phase 21) is deliberately paused pending further
-> UI changes; there is no live URL yet. Nothing in this file is aspirational
-> — see `ROADMAP.md` for exact per-phase status.
+> **Status: implemented and tested locally, redeploying to Render — no
+> live URL yet.** Every feature below is real and verified (157 backend
+> tests, frontend tests — see Testing below). A first deployment attempt on
+> Render's free tier really did hit an OOM under real request load (the
+> embedding model + PyTorch was too heavy for the 512MB ceiling); the fix
+> was to swap the embedding runtime to `fastembed`/ONNX Runtime (no PyTorch
+> at all, ~191MB RSS measured under real inference) rather than move to a
+> different cloud provider — see ADR-20 in
+> `docs/ARCHITECTURE_DECISIONS.md`. Redeploying with this fix is the
+> immediate next step (`ROADMAP.md` Phase 21); nothing in this file is
+> aspirational — see `ROADMAP.md` for exact per-phase status.
 
 ## Project Overview
 
@@ -63,11 +68,11 @@ pipelines sharing the same embedding model and vector store — see
 |---|---|
 | Frontend | React + Vite, vanilla CSS |
 | Backend | FastAPI (Python) |
-| Embeddings | Local `sentence-transformers/all-MiniLM-L6-v2` (384-dim, no external API) |
+| Embeddings | Local `BAAI/bge-small-en-v1.5` via `fastembed`/ONNX Runtime (384-dim, no external API, no PyTorch — ADR-20) |
 | Vector DB | Qdrant Cloud (free tier) |
 | LLM | Groq (`qwen/qwen3.8-27b`, free tier) |
 | Frontend hosting | Cloudflare Pages (planned — not yet deployed, see Deployment) |
-| Backend hosting | Render, free web service (planned — not yet deployed, see Deployment) |
+| Backend hosting | Render, free web service (redeploying with the ADR-20 memory fix, see Deployment) |
 
 ## Screenshots
 
@@ -146,11 +151,11 @@ See `docs/RAG_PIPELINE.md` for the complete 14-stage pipeline. Summary:
 
 ## Evaluation
 
-Real numbers from an actual run against the live backend and live Groq API
-(not estimated) — full methodology in `docs/RAG_EVALUATION.md`, raw output
-in `evaluation/results/20260905T201415Z.json`, dataset in
+Full methodology in `docs/RAG_EVALUATION.md`, dataset in
 `evaluation/dataset/demo_kb_cases.json` (23 hand-verified cases: 15
-answerable, 5 no-context, 3 adversarial):
+answerable, 5 no-context, 3 adversarial). The last complete recorded run,
+`evaluation/results/20260906T065120Z.json` (after the ADR-17 reranker
+revert, before ADR-20's embedding-runtime swap):
 
 | Metric | Result | Target (`docs/RAG_EVALUATION.md` §11) |
 |---|---|---|
@@ -159,6 +164,30 @@ answerable, 5 no-context, 3 adversarial):
 | `mean_relevance_score` | 1.0 | — |
 | `no_context_precision` | 1.0 | ≥ 0.90 |
 | `hallucination_rate` | 0.0 | ≤ 0.10 |
+
+(An intermediate run right after the ADR-17 revert,
+`evaluation/results/20260906T052601Z.json`, briefly recorded
+`no_context_precision` at 0.6; a later run the same day recovered it to 1.0
+— both files are kept, not overwritten, per this project's practice of
+never deleting a recorded real run.)
+
+**Pending re-validation:** ADR-20 (embedding runtime → `fastembed`/ONNX
+Runtime) and the resulting demo-KB reseed happened *after* the run above.
+A fresh full evaluation run was attempted this session but blocked
+mid-run by Groq's free-tier **daily token quota** being exhausted (a real
+`429 rate_limit_exceeded` from Groq, unrelated to this change — confirmed
+via the backend's own error log, not assumed). What *is* directly verified
+this session instead: all `test_embed.py` unit tests (dimensionality,
+determinism, prefix correctness, semantic-similarity ordering on real demo
+content) pass unchanged against the new runtime, and one live end-to-end
+`/chat` call against the reseeded demo KB returned a correct, grounded,
+correctly cited answer. Treat the table above as the last known-good
+numbers under the *previous* embedding runtime, not a confirmed
+measurement of the current one — re-run
+`evaluation/scripts/run_evaluation.py` once Groq's daily quota resets and
+replace this table with that output, per this project's own rule that
+evaluation numbers are always copied from a real run, never assumed to
+carry over.
 
 **Two honest caveats**, also recorded in the results file: (1)
 `retrieval_hit_rate` and `source_accuracy_rate` collapse to the same signal
@@ -172,24 +201,33 @@ at arbitrary scale.
 ## Testing
 
 Full strategy across four levels (unit, API/integration, RAG-specific,
-end-to-end) in `docs/TEST_STRATEGY.md`. Current real state: **132 backend
-tests** (pytest, `ruff check` clean) and **23 frontend tests** (Vitest,
-`oxlint` clean apart from 4 pre-existing non-blocking warnings), wired into
-GitHub Actions CI (`.github/workflows/ci.yml`) on every push/PR — CI
-excludes tests that call the real Groq API (tagged `@pytest.mark.live_groq`)
-so it never depends on live LLM quota, and needs no cloud credentials
-(Qdrant falls back to an in-memory instance when unconfigured). The
-separate RAG *quality* evaluation suite (above) is deliberately never a CI
-gate, since it depends on live LLM calls.
+end-to-end) in `docs/TEST_STRATEGY.md`. Current real state (re-verified
+this session against the ADR-20 `fastembed` embedding runtime, all
+green): **157 backend tests** (pytest, `ruff check` clean) and **45
+frontend tests** (Vitest, `oxlint` clean apart from 7 pre-existing
+non-blocking warnings — React fast-refresh/effect-setState style warnings,
+not correctness bugs), wired into GitHub Actions CI
+(`.github/workflows/ci.yml`) on every push/PR — CI excludes tests that call
+the real Groq API (tagged `@pytest.mark.live_groq`) so it never depends on
+live LLM quota, and needs no cloud credentials (Qdrant falls back to an
+in-memory instance when unconfigured). The separate RAG *quality*
+evaluation suite (below) is deliberately never a CI gate, since it depends
+on live LLM calls.
 
 ## Deployment
 
 Full zero-cost plan (Cloudflare Pages + Render + Qdrant Cloud + Groq, all
 free tiers, no card required anywhere) in `docs/DEPLOYMENT.md`. **Current
-status: not yet deployed** — deliberately paused (see the status note at
-the top of this file) until planned UI changes land; a `render.yaml`
-Blueprint is already prepared at the repo root so the Render side deploys
-in one step once that's ready to proceed.
+status: no live URL yet, redeploying to Render.** A real first deployment
+attempt on Render's free tier hit a genuine OOM under live request load
+(the `sentence-transformers`/PyTorch embedding runtime was too heavy for
+the 512MB ceiling); a detour through Google Cloud Run (ADR-19) was tried
+and then deliberately reverted — the user preferred to stay on Render
+rather than adopt a new cloud provider, so the actual fix was replacing the
+embedding runtime with `fastembed`/ONNX Runtime instead (ADR-20, ~191MB RSS
+measured under real inference). `render.yaml` is unchanged and ready; the
+remaining step is an actual Render redeploy of this fixed code and a fresh
+live smoke test against the public URL.
 
 ## Limitations
 
@@ -212,11 +250,18 @@ Known V1 constraints, stated honestly rather than glossed over:
 - **No rate limiting** — an accepted V1 risk (`docs/SECURITY.md`
   "Excessive Requests"); quota exhaustion degrades gracefully to a `502`
   rather than crashing, but isn't prevented.
-- **16 known, unresolved dependency vulnerabilities** (down from 74) in
-  `langchain`, `langchain-text-splitters`, `langchain-core`, `starlette`,
-  and `transformers` — each requires a major/breaking version bump that
-  was judged too risky to attempt without a dedicated regression budget;
-  tracked explicitly rather than silently ignored (`ROADMAP.md` Phase 20).
+- **Known, unresolved dependency vulnerabilities** in `langchain`,
+  `langchain-core`, and `langchain-text-splitters` — each requires a
+  major/breaking version bump that was judged too risky to attempt without
+  a dedicated regression budget; tracked explicitly rather than silently
+  ignored (`ROADMAP.md` Phase 20). Re-checked this session with
+  `pip-audit` against a fresh install of the post-ADR-20 `requirements.txt`:
+  removing `sentence-transformers`/`torch` also removed `transformers` as a
+  dependency entirely (one fewer vulnerable package than Phase 20's original
+  count), but `starlette` still shows unresolved CVEs (needs a matching
+  FastAPI major bump) and `pip-audit` additionally flags the venv's own
+  `pip` tooling version — not a shipped runtime dependency of the deployed
+  app, but worth keeping current regardless.
 - **No process-level sandboxing** around PDF/DOCX parsing of untrusted
   uploads — an accepted V1 risk, see `docs/SECURITY.md`.
 

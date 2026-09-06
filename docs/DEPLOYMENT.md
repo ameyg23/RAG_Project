@@ -14,30 +14,26 @@ indefinitely (see the note on Groq limits in particular).
   builds on every push.
 - **Environment configuration:** `VITE_API_BASE_URL` set as a Cloudflare
   Pages build-time environment variable, pointing at the deployed backend
-  URL — currently the Cloud Run service's `*.run.app` URL (see "Backend —
-  Google Cloud Run" below; was the Render URL prior to ADR-19). Not a
-  secret — it's a public URL baked into the static bundle.
+  URL — currently the Render service's URL again (see "Backend — Render"
+  below; briefly the Cloud Run `*.run.app` URL under ADR-19, reverted by
+  ADR-20). Not a secret — it's a public URL baked into the static bundle.
 
 **Why this provider:** ADR-09 — the only free static host with no bandwidth
 cap, important for a project that might be shared/linked publicly without
 risking a bandwidth-based interruption.
 
-## Backend — Render (Free Web Service) — SUPERSEDED, see Cloud Run below
+## Backend — Render (Free Web Service) (current, again — see ADR-20)
 
-**Status (2026-09): superseded by Google Cloud Run (ADR-19).** Render's
-free-tier 512MB RAM ceiling proved insufficient for this backend's real
-request load — confirmed via repeated live testing, not assumed:
-`GET /health` reliably returned `200`, but a real `POST /chat` request
-(which loads `BAAI/bge-small-en-v1.5` via `sentence-transformers`/CPU-torch
-to embed the query) reliably 502'd shortly after, followed by an instance
-restart. This happened **even after** ADR-17's reranker was fully reverted
-to reduce memory pressure — proving the embedding model alone, not the
-reranker, was already enough to exceed 512MB under real inference load. See
-ADR-19 for the full evidence trail and provider comparison. This section is
-kept, not deleted, because `render.yaml` remains in the repository as a
-legitimate fallback if the user ever chooses to pay for Render's Standard
-tier (2GB+ RAM) instead of using Cloud Run's free tier — the instructions
-below still apply verbatim to that paid path.
+**Status (2026-09): current.** Render was briefly superseded by Google
+Cloud Run (ADR-19) after its free-tier 512MB RAM ceiling proved
+insufficient for `sentence-transformers`/CPU-torch embedding inference
+under real request load. ADR-20 fixed the actual root cause instead of
+switching platforms: the embedding runtime moved to `fastembed`/ONNX
+Runtime (same model, no PyTorch dependency at all), measured at ~191MB RSS
+for the whole process under real inference — comfortably under 512MB. The
+user explicitly preferred staying on Render over adopting a Google Cloud
+account, and with the memory driver fixed there was no remaining reason not
+to. See ADR-20 for the full before/after evidence.
 
 - **Free tier:** 750 free instance-hours/month, native Python buildpack (no
   Dockerfile required), no credit card required.
@@ -46,25 +42,46 @@ below still apply verbatim to that paid path.
   while the service spins back up. This is the single biggest latency
   characteristic to design the UI around (`docs/UI_UX.md` §1, §10).
 - **Build process:** `pip install -r requirements.txt`; start command
-  `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+  `uvicorn main:app --host 0.0.0.0 --port $PORT`. Verified this session: a
+  genuinely fresh `pip install` of the post-ADR-20 `requirements.txt`
+  installs only `fastembed`+`onnxruntime` in that dependency family — no
+  `torch`/`transformers`/`sentence-transformers` at all — so the build is
+  also meaningfully faster/lighter than before.
 - **Environment configuration:** secrets (`GROQ_API_KEY`, `QDRANT_URL`,
   `QDRANT_API_KEY`) set via Render's dashboard environment-variable UI,
-  never committed to the repository.
+  never committed to the repository; also set `OMP_NUM_THREADS`/
+  `MKL_NUM_THREADS`/`OPENBLAS_NUM_THREADS=1` (see `render.yaml`) — the same
+  memory-safety thread-pool cap applied since before ADR-19, still relevant
+  for numpy/scipy overhead independent of which embedding runtime is used.
 
-**Why this provider (historical — see ADR-19 for why it was replaced):**
-ADR-10 — simplest Git-integrated Python deploy with no card required; disk
-is ephemeral (wiped on redeploy), which is why no persistent state lives on
-the backend filesystem (ADR-11, ADR-12).
+**Why this provider:** ADR-10 (original choice) — simplest Git-integrated
+Python deploy with no card required; disk is ephemeral (wiped on redeploy),
+which is why no persistent state lives on the backend filesystem (ADR-11,
+ADR-12). Reaffirmed by ADR-20 once the actual memory driver was fixed
+directly rather than worked around with a bigger-RAM platform.
 
-## Backend — Google Cloud Run (current)
+**Redeploying after this change:** if a Render service from before ADR-20
+is still live, push this commit and either let Render's auto-deploy-on-push
+pick it up, or trigger a manual deploy from Render's dashboard — Render
+rebuilds from `requirements.txt` on every deploy, so the old torch-based
+install is fully replaced, not patched in place.
+
+## Backend — Google Cloud Run (documented fallback, not currently used)
+
+**Status (2026-09): superseded again by Render, per ADR-20.** Kept here,
+unused, as a documented option if a future feature (e.g. reranking
+returning, ADR-17) ever pushes memory back over Render's free-tier ceiling
+even with the lighter `fastembed` runtime introduced by ADR-20 —
+`backend/Dockerfile` already exists and is untouched, so this path can be
+picked back up without re-authoring it.
 
 **Free tier:** ~180,000 vCPU-seconds and ~360,000 GiB-seconds of compute
 per month, 2 million requests/month, no credit card required to use the
 free tier. Unlike Render free's fixed 512MB ceiling, Cloud Run lets you
 configure container memory up to 32GB — the dimension that actually broke
-on Render (see ADR-19). This project uses a small fraction of that ceiling
-(1GiB recommended below), leaving real headroom instead of running at the
-edge of what OOM-crashed before.
+on Render under the old torch-based runtime (see ADR-19). This project uses
+a small fraction of that ceiling (1GiB recommended below), leaving real
+headroom instead of running at the edge of what OOM-crashed before.
 
 - **Build process:** Cloud Run's **"Continuously deploy from a
   repository"** flow triggers a Cloud Build that reads `backend/Dockerfile`
@@ -87,12 +104,14 @@ edge of what OOM-crashed before.
   had, so the frontend's existing "waking up" UX handling
   (`docs/UI_UX.md`) applies unchanged.
 
-**Why this provider:** ADR-19 — genuinely free tier with configurable
-memory well beyond the 512MB that broke on Render, evidenced by live
-testing rather than assumed; no card required; same Dockerfile-based image
-is portable to any other OCI-compatible host if ever needed.
+**Why this provider (historical — see ADR-20 for why Render was resumed
+instead):** ADR-19 — genuinely free tier with configurable memory well
+beyond the 512MB that broke on Render's old torch-based runtime, evidenced
+by live testing rather than assumed; no card required; same
+Dockerfile-based image is portable to any other OCI-compatible host if ever
+needed.
 
-### Step-by-step: deploying the backend to Cloud Run
+### Step-by-step: deploying the backend to Cloud Run (fallback path, not the current deploy)
 
 This section is written for the project owner to execute directly in the
 GCP Console — no step here involves Claude/an agent creating an account or
@@ -180,8 +199,10 @@ control matching the described concept rather than the literal string.
     otherwise the frontend cannot reach it at all.
 11. **Deploy.** Confirm the deploy; Cloud Build will build the image from
     `backend/Dockerfile` and Cloud Run will start the service. First builds
-    typically take a few minutes (installing `torch` and
-    `sentence-transformers` is the bulk of the build time).
+    typically take a couple of minutes — post-ADR-20 this installs
+    `fastembed`/`onnxruntime` rather than `torch`/`sentence-transformers`,
+    so builds are noticeably faster than when this section was first
+    written.
 12. **Find the deployed service's URL.** Once the deploy finishes, Cloud
     Run's service detail page shows a public HTTPS URL (a
     `*.run.app` domain, e.g. `https://rag-chatbot-backend-xxxxx.run.app`).
@@ -272,18 +293,19 @@ provider research.
 
 ## Cross-Cutting Concerns
 
-**Cold starts:** only the backend cold-starts (Render previously, Cloud Run
-now with `min-instances=0`); Cloudflare Pages is always-on static hosting
-with no equivalent delay. UI mitigation is owned by `docs/UI_UX.md`
-(distinct "waking up" messaging), which was built for Render's cold start
-and applies unchanged to Cloud Run's (same category of behavior, ADR-19).
+**Cold starts:** only the backend cold-starts (Render, again as of ADR-20;
+briefly Cloud Run with `min-instances=0` under ADR-19); Cloudflare Pages is
+always-on static hosting with no equivalent delay. UI mitigation is owned
+by `docs/UI_UX.md` (distinct "waking up" messaging), which was built for
+Render's cold start originally and applies unchanged whichever backend host
+is current.
 
 **Persistence risks:** the Qdrant 7-day/28-day inactivity suspension
 (above) is the single biggest "this looks broken but isn't" risk in this
 architecture. Mitigation is documentation + a one-command reseed script,
 deliberately not an automated keep-alive. This is entirely independent of
 the backend hosting choice (Render or Cloud Run) — Qdrant Cloud is
-unaffected by ADR-19.
+unaffected by ADR-19/ADR-20.
 
 **CORS:** the backend's allowed origin (`CORS_ALLOWED_ORIGIN`, see
 `docs/ENVIRONMENT.md`) must be updated to match whichever Cloudflare Pages
@@ -294,61 +316,63 @@ performed once, immediately after the first frontend deploy.
 
 **Secret management:** every secret lives only in (a) the issuing
 provider's own dashboard (where the key value is generated — Groq, Qdrant),
-and (b) Cloud Run's environment-variable console (or Render's, if using
-the paid-tier fallback). Nothing secret is ever committed to git or present
-in the Cloudflare Pages build output.
+and (b) Render's environment-variable dashboard (or Cloud Run's console, if
+the fallback path above is ever used instead). Nothing secret is ever
+committed to git or present in the Cloudflare Pages build output.
 
 ## Deployment Sequence
 
 1. Create a Qdrant Cloud free cluster; record its URL and API key.
 2. Create a Groq account and generate an API key (no card required).
-3. Deploy the backend to Cloud Run (see the step-by-step guide above); set
-   `GROQ_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`, and `CORS_ALLOWED_ORIGIN`
-   as environment variables; verify `GET /health` returns `"status": "ok"`
-   from the Cloud Run service's public URL.
+3. Deploy the backend to Render (native Python buildpack, `render.yaml`);
+   set `GROQ_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`, and
+   `CORS_ALLOWED_ORIGIN` as environment variables; verify `GET /health`
+   returns `"status": "ok"` from the Render service's public URL, then
+   exercise a real `POST /chat` to confirm the embedding model actually
+   loads and answers under real memory constraints (ADR-20) — don't just
+   trust the health check.
 4. Run `backend/scripts/seed_demo_kb.py` once, locally, against the live
    Qdrant cluster (it talks to Qdrant directly, not through the deployed
    backend — see the script's own docstring) to populate the demo
    knowledge base.
 5. Deploy the frontend to Cloudflare Pages with `VITE_API_BASE_URL` set to
-   the deployed Cloud Run service's `*.run.app` URL.
+   the deployed Render service's URL.
 6. Update the backend's `CORS_ALLOWED_ORIGIN` environment variable (in
-   Cloud Run's console) to the final Cloudflare Pages URL and let Cloud Run
-   redeploy the new revision.
+   Render's dashboard) to the final Cloudflare Pages URL and let Render
+   redeploy.
 
 ## How to Replace an API Key
 
 Rotate the key in the issuing provider's dashboard (Groq or Qdrant), then
-update the corresponding environment variable in Cloud Run's console
-(saving triggers a new revision automatically — no separate manual redeploy
-step). **No code change is required anywhere** — this follows directly
-from ADR-15's backend-only secret pattern, which is provider-agnostic.
+update the corresponding environment variable in Render's dashboard (saving
+triggers a redeploy automatically — no separate manual step). **No code
+change is required anywhere** — this follows directly from ADR-15's
+backend-only secret pattern, which is provider-agnostic.
 
 ## How to Avoid Accidental Billing
 
-Never add a payment method to any of the four services used here (Google
-Cloud [Cloud Run/Cloud Build], Groq, Qdrant Cloud, Cloudflare Pages) for
-this project — every free tier referenced above explicitly requires no
-card. If any provider ever prompts for card entry to continue using a
-feature this plan relies on, treat that as a signal to stop and
-re-evaluate the plan, not to proceed. (Render remains a legitimate fallback
-option specifically *if* the user decides to pay — see the Render section
-above — but that is an explicit, deliberate choice, not something to be
-led into unintentionally.)
+Never add a payment method to any of the four services used here (Render,
+Groq, Qdrant Cloud, Cloudflare Pages) for this project — every free tier
+referenced above explicitly requires no card. If any provider ever prompts
+for card entry to continue using a feature this plan relies on, treat that
+as a signal to stop and re-evaluate the plan, not to proceed. (Google Cloud
+Run remains a documented, equally card-free fallback if Render's free tier
+is ever genuinely outgrown again — see the Cloud Run section above — not a
+paid-tier scenario either way.)
 
 ## Acceptance Criteria Check
 
 - **Every external service has a documented cost model:** ✓ (Cloudflare
-  Pages, Google Cloud Run, Qdrant Cloud, Groq — each above; Render kept as
-  a documented paid-tier fallback).
+  Pages, Render, Qdrant Cloud, Groq — each above; Google Cloud Run kept as
+  a documented, also-free fallback).
 - **Persistence is explicitly addressed:** ✓ (Qdrant persistence + its
   suspension risk; ephemeral backend container filesystem; transient raw
   files).
 - **No paid service is required for V1:** ✓ — all four current services
-  (Cloudflare Pages, Cloud Run, Qdrant Cloud, Groq) are used at their
-  no-card free tier.
+  (Cloudflare Pages, Render, Qdrant Cloud, Groq) are used at their no-card
+  free tier.
 - **API keys are not exposed:** ✓ — backend-only environment variables
   (ADR-15), never in frontend build output.
 - **Deployment can be reproduced from the documentation:** ✓ — the ordered
-  six-step sequence above, plus the detailed Cloud Run step-by-step guide,
-  is sufficient to redeploy from scratch.
+  six-step sequence above, plus the detailed Cloud Run step-by-step guide
+  (fallback path), is sufficient to redeploy from scratch.

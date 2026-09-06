@@ -24,10 +24,11 @@ def test_batch_dimensionality():
 def test_determinism():
     first = embed_texts(["The quick brown fox jumps over the lazy dog."])
     second = embed_texts(["The quick brown fox jumps over the lazy dog."])
-    # Observed empirically: CPU sentence-transformers inference on this
-    # model is exactly reproducible for repeated calls in the same process
-    # (no nondeterminism from batching/threading was seen), so exact
-    # equality is asserted rather than a tolerance-based fallback.
+    # Observed empirically: CPU fastembed/ONNX Runtime inference on this
+    # model (threads=1, ADR-20) is exactly reproducible for repeated calls
+    # in the same process (no nondeterminism from batching/threading was
+    # seen), so exact equality is asserted rather than a tolerance-based
+    # fallback.
     assert first == second
 
 

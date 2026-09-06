@@ -15,10 +15,13 @@ services:
         sync: false
       - key: CORS_ALLOWED_ORIGIN
         value: http://localhost:5173
-      # Cap torch/numpy/scipy's BLAS thread pools. On a 512MB free-tier
-      # instance, each unbounded OpenMP/MKL/OpenBLAS thread pool adds its own
-      # stack + arena memory on top of model weights; with only 1 shared vCPU
-      # anyway, multithreading buys negligible speed here. No behavior change.
+      # Cap numpy/scipy/onnxruntime's BLAS thread pools (ADR-20: the
+      # embedding runtime moved from sentence-transformers/torch to
+      # fastembed/ONNX Runtime, but this same cap still applies). On a
+      # 512MB free-tier instance, each unbounded OpenMP/MKL/OpenBLAS thread
+      # pool adds its own stack + arena memory on top of model weights; with
+      # only 1 shared vCPU anyway, multithreading buys negligible speed
+      # here. No behavior change.
       - key: OMP_NUM_THREADS
         value: "1"
       - key: MKL_NUM_THREADS

@@ -12,9 +12,9 @@ template with placeholder values.
 | `QDRANT_URL` | Endpoint of the Qdrant Cloud cluster | Required | `https://REPLACE.cloud.qdrant.io:6333` | `retrieval/vector_store.py` | Sensitive (not a credential itself, but reveals your cluster endpoint — treat as private) |
 | `QDRANT_API_KEY` | Authenticates calls to Qdrant Cloud | Required | `REPLACE_WITH_YOUR_QDRANT_KEY` | `retrieval/vector_store.py` | **Yes** |
 | `CORS_ALLOWED_ORIGIN` | The single frontend origin allowed to call this API | Required | `http://localhost:5173` (dev) / `https://your-app.pages.dev` (prod) | `main.py` CORS middleware | No |
-| `EMBEDDING_MODEL_NAME` | Which sentence-transformers model to load locally | Optional (default: `sentence-transformers/all-MiniLM-L6-v2`) | `sentence-transformers/all-MiniLM-L6-v2` | `ingestion/embed.py` | No |
+| `EMBEDDING_MODEL_NAME` | Which local embedding model `fastembed` loads (ADR-20; ONNX Runtime, no PyTorch) | Optional (default: `BAAI/bge-small-en-v1.5`, ADR-06) | `BAAI/bge-small-en-v1.5` | `ingestion/embed.py` | No |
 | `LLM_MODEL_NAME` | Which Groq-hosted model to call | Optional (default: `qwen/qwen3.8-27b` — ADR-08; Groq's free-tier catalog changes over time, re-verify with `client.models.list()` before assuming a hardcoded name is still valid) | `qwen/qwen3.8-27b` | `retrieval/generation.py` | No |
-| `PORT` | Port the ASGI server binds to | Required in production (provided automatically by Cloud Run at container start — see ADR-19; was previously provided by Render) | `8000` (local dev default) | `uvicorn` start command (`backend/Dockerfile`'s `CMD`) | No |
+| `PORT` | Port the ASGI server binds to | Required in production (provided automatically by Render at container start; briefly Cloud Run's under ADR-19, reverted by ADR-20) | `8000` (local dev default) | `uvicorn` start command (`render.yaml`'s `startCommand`, or `backend/Dockerfile`'s `CMD` if the Cloud Run fallback is used) | No |
 
 ## Frontend (`frontend/`, build-time only, Vite convention)
 
