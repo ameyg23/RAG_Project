@@ -12,6 +12,18 @@ langchain-text-splitters==0.3.9
 pypdf==6.17.0
 docx2txt==0.8
 
+# CPU-only torch build (Render's free-tier instance is CPU-only, 512MB RAM).
+# Pinned explicitly so pip's resolver satisfies sentence-transformers' unpinned
+# `torch>=1.11.0` requirement with this wheel instead of defaulting to the
+# standard PyPI torch build, which pulls in several GB of unused NVIDIA
+# CUDA runtime packages (nvidia-cublas, nvidia-cudnn, etc.) that OOM-kill the
+# process on startup. Version must stay in sync with whatever plain `torch`
+# would otherwise resolve to — check https://download.pytorch.org/whl/cpu/torch/
+# (or `pip index versions torch --index-url https://download.pytorch.org/whl/cpu`)
+# for available versions before bumping.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu
+
 # Local embeddings, no API/rate limit (ADR-06)
 sentence-transformers==3.3.1
 
